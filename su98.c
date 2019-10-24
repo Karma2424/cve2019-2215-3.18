@@ -13,18 +13,19 @@
 // Linux localhost 3.18.71-perf+ #1 SMP PREEMPT Tue Jul 17 14:44:34 KST 2018 aarch64
 #define OFFSET__thread_info__flags 0x000
 #define OFFSET__task_struct__stack 0x008
-#define OFFSET__task_struct__mm 0x308
 #define OFFSET__task_struct__cred 0x550
 #define OFFSET__task_struct__seccomp 0x9b0 
 #define OFFSET__cred__uid 0x004
 #define OFFSET__cred__securebits 0x024
-#define OFFSET__cred__cap_inheritable 0x028
 #define OFFSET__cred__cap_permitted 0x030
-#define OFFSET__cred__cap_effective 0x038
-#define OFFSET__cred__cap_bset 0x040
-#define OFFSET__cred__cap_ambient 0x048
-#define OFFSET__cred__security 0x078
 #define OFFSET__cred__user_ns 0x088 // if you undefine this, it might still work
+#define OFFSET__cred__cap_effective (OFFSET__cred__cap_permitted+0x008)
+#define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
+//Note needed, but saved for future use
+//#define OFFSET__cred__security 0x078
+//#define OFFSET__cred__cap_inheritable 0x028
+//#define OFFSET__cred__cap_ambient 0x048
+//#define OFFSET__task_struct__mm 0x308
 
 
 #define _GNU_SOURCE
