@@ -47,6 +47,17 @@
 #define PAGE 0x1000
 #define TASK_STRUCT_OFFSET_FROM_TASK_LIST 0xE8
 
+int quiet;
+
+void message(char* fmt, ...) {
+    if (quiet)
+        return;
+    va_start (ap, fmt);
+    vprintf (fmt, ap);
+    putchar('\n');
+    va_end (ap);    
+}
+
 unsigned long kernel_read_ulong(unsigned long kaddr);
 
 void hexdump_memory(void *_buf, size_t byte_count) {
