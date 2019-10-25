@@ -577,17 +577,37 @@ int fixKallsymsFormatStrings(unsigned long start)
     return found;
 }
 
-unsigned long findSymbol(unsigned long pointInKernelMemory, char *symbol)
+unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char *symbol)
 {
     char buf[1024];
     errno = 0;
     FILE *ks = fopen("/proc/kallsyms", "r");
     if (ks == NULL || NULL == fgets(buf, 1024, ks))
-        error( "Reading /proc/kallsyms");
+        error("Reading /proc/kallsyms");
     fclose(ks);
-    if (strncmp(buf, "0000000000000000", 16) == 0 && 0 == fixKallsymsFormatStrings(pointInKernelMemory))
-    {
-        error( "Cannnot fix kallsyms format string");
+    char* p = strrchr(execName, '/');
+    unsigned n;
+    if (p == NULL)
+        n = 0;
+    else
+        n = p-execName+1;
+    char* pathname = alloca(strlen(symbol)+7+1+n);
+    strncpy(pathname, execName, n);
+    pathname[n] = 0;
+    strcat(pathname, symbol);
+    strcat(pathname, ".symbol");
+    
+    if (strncmp(buf, "0000000000000000", 16) == 0) {
+        FILE *cached = fopen(pathname, "r");
+        unsigned long address = 0;
+        fscanf(cached, "%lx", &address);
+        fclose(cached);
+        if (address != 0)
+            return address;
+        if (fixKallsymsFormatStrings(pointInKernelMemory))
+        {
+            error( "Cannnot fix kallsyms format string");
+        }
     }
     ks = fopen("/proc/kallsyms", "r");
     unsigned l = strlen(symbol);
@@ -604,6 +624,12 @@ unsigned long findSymbol(unsigned long pointInKernelMemory, char *symbol)
             unsigned long address;
             sscanf(buf, "%lx", &address);
             fclose(ks);
+            FILE *cached = fopen(pathname, "w");
+            fprintf(cached, "%lx\n", address);
+            fclose(cached);
+            char* cmd = alloca(10+strlen(pathname)+1);
+            sprintf(cmd, "chmod 666 %s", pathname);
+            system(cmd);
             return address;
         }
     }
@@ -753,7 +779,8 @@ int main(int argc, char **argv)
     message("MAIN: search_base = %lx", search_base);
 
     message("MAIN: searching for selinux_enforcing");
-    unsigned long selinux_enforcing = findSymbol(search_base, "selinux_enforcing");
+
+    unsigned long selinux_enforcing = findSymbol(argv[0], search_base, "selinux_enforcing");
     if (selinux_enforcing == 0)
         message("MAIN: **FAIL** cannot find selinux_enforcing symbol");
     else
