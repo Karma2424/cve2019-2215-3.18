@@ -999,7 +999,7 @@ int main(int argc, char **argv)
         message("MAIN: **FAIL** cannot find selinux_enforcing symbol");
     else
     {
-        //kernel_write_uint(selinux_enforcing, 0);
+        kernel_write_uint(selinux_enforcing, 0);
         message("MAIN: disabled selinux enforcing");
         
 /* process hangs if these are done */        
