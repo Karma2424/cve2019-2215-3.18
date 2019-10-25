@@ -580,11 +580,14 @@ int fixKallsymsFormatStrings(unsigned long start)
 unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char *symbol)
 {
     char buf[1024];
+    buf[0] = 0;
     errno = 0;
+    
     FILE *ks = fopen("/proc/kallsyms", "r");
-    if (ks == NULL || NULL == fgets(buf, 1024, ks))
-        error("Reading /proc/kallsyms");
-    fclose(ks);
+    fgets(buf, 1024, ks);
+    if (ks != NULL)
+        fclose(ks);
+    
     char* p = strrchr(execName, '/');
     unsigned n;
     if (p == NULL)
@@ -597,13 +600,15 @@ unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char
     strcat(pathname, symbol);
     strcat(pathname, ".symbol");
     
-    if (strncmp(buf, "0000000000000000", 16) == 0) {
+    if (buf[0] == 0 || strncmp(buf, "0000000000000000", 16) == 0) {
         FILE *cached = fopen(pathname, "r");
         unsigned long address = 0;
         fscanf(cached, "%lx", &address);
         fclose(cached);
-        if (address != 0)
+        if (address != 0) {
+            message("MAIN: read address %lx from cache", address);
             return address;
+        }
         if (fixKallsymsFormatStrings(pointInKernelMemory))
         {
             error( "Cannnot fix kallsyms format string");
