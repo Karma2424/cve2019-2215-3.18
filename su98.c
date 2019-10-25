@@ -641,15 +641,21 @@ int fixKallsymsFormatStrings(unsigned long start)
 
                     if (!strcmp(fmt, "%pK %c %s\t[%s]\x0A"))
                     {
-                        found++;
-                        kernel_write(a, "%p %c %s\t[%s]\x0A", 15);
                         message("MAIN: patching longer version at %lx", a);
+                        if (15 != raw_kernel_write(a, "%p %c %s\t[%s]\x0A", 15)) {
+                            message("MAIN: **fail** probably you have read-only const storage");
+                            return found;
+                        }
+                        found++;
                     }
                     else if (!strcmp(fmt, "%pK %c %s\x0A"))
                     {
-                        found++;
-                        kernel_write(a, "%p %c %s\x0A", 10);
                         message("MAIN: patching shorter version at %lx", a);
+                        if (15 != raw_kernel_write(a, "%p %c %s\x0A", 10)) {
+                            message("MAIN: **fail** probably you have read-only const storage");
+                            return found;
+                        }
+                        found++;
                     }
 
                     if (found >= 2)
