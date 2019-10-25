@@ -19,13 +19,10 @@
 #define OFFSET__cred__cap_effective (OFFSET__cred__cap_permitted+0x008)
 #define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
 
-// The following are for LGV20 LS997
+//Not needed, but saved for future use; the offsets are for LGV20 LS998
 //#define OFFSET__task_struct__seccomp 0x9b0 
 //#define OFFSET__cred__user_ns 0x088 // if you define this, the first run might be a little faster
 //#define OFFSET__task_struct__cred 0x550
-
-
-//Note needed, but saved for future use
 //#define OFFSET__cred__security 0x078
 //#define OFFSET__cred__cap_inheritable 0x028
 //#define OFFSET__cred__cap_ambient 0x048
