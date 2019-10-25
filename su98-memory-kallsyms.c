@@ -20,7 +20,7 @@
 #define OFFSET__cred__cap_effective (OFFSET__cred__cap_permitted+0x008)
 #define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
 
-#undef NO_PROC_KALLSYMS
+#define NO_PROC_KALLSYMS
 #undef KALLSYMS_CACHING
 #define KSYM_NAME_LEN 128
 

@@ -24,3 +24,5 @@ $(EXECUTABLE): $(OBJECTS)
 
 clean: 
 	rm *.o poc98;
+
+all: su98
