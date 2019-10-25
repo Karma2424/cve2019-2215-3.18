@@ -553,6 +553,8 @@ void kernel_write_uchar(unsigned long kaddr, unsigned char data)
 // Make the kallsyms module not check for permission to list symbol addresses
 int fixKallsymsFormatStrings(unsigned long start)
 {
+    errno = 0;
+    
     int found = 0;
 
     start &= ~(PAGE - 1);
@@ -867,7 +869,8 @@ unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char
 #endif
         if (fixKallsymsFormatStrings(pointInKernelMemory) == 0)
         {
-            error( "Cannnot fix kallsyms format string");
+            message( "MAIN: **partial failure** cannnot fix kallsyms format string");
+            return findSymbol_memory_search(symbol);
         }
     }
 
