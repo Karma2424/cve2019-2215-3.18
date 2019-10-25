@@ -796,13 +796,17 @@ int loadKallsyms() {
     message("MAIN: kallsyms names end at 0x%lx", offset);    
     struct kernel_buffer buf = {.pageBufferOffset = 0};
 
-    if ((offset & 0xFF) == 0) {
-        if (kernel_read_ulong(offset+40) == 0 && kernel_read_ulong(offset+48) == 0) 
-            offset += 0x100;
-    }
-    else
-        kallsyms.names = (offset+0x100) & ~0xFFul;
+    offset = (offset + 0xFFul) & ~0xFFul;
+
+    unsigned long count = kernel_read_ulong(offset);
+    offset += 8;
     
+    if (count != kallsyms.num_syms) {
+        message("MAIN: **fail** kallsym entry count mismatch %ld", count);
+    }
+
+    offset = (offset + 0xFFul) & ~0xFFul;
+
     kallsyms.names = offset;
     
     for (unsigned long i = 0 ; i < kallsyms.num_syms ; i++) {
@@ -1111,7 +1115,6 @@ int main(int argc, char **argv)
             message("MAIN: SECCOMP status %d", prctl(PR_GET_SECCOMP));
         }
     }
-
 
     if (selinux_enforcing == 0)
         message("MAIN: **FAIL** did not find selinux_enforcing symbol");

