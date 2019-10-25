@@ -908,6 +908,15 @@ int main(int argc, char **argv)
 {
     if (argc >= 2)
         quiet = 1;
+    
+    if (argc >= 2) {
+        if (0 == strcmp(argv[1], "-quiet")) {
+            quiet = 1;
+            for (int i=1; i<argc-1; i++)
+                argv[i] = argv[i+1];
+            argc--;
+        }
+    }
 
     message("MAIN: starting exploit for devices with waitqueue at 0x98");
 
