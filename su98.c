@@ -1007,6 +1007,10 @@ void getPackageName(unsigned uid, char* packageName) {
         strcpy(packageName, "adb");
         return;
     }
+    else if (uid == 0) {
+        strcpy(packageName, "root");
+        return;
+    }
     strcpy(packageName, "(unknown)");
     FILE* f = fopen("/data/system/packages.list", "r");
     if (f == NULL)
