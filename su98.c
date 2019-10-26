@@ -11,7 +11,8 @@
 
 // $ uname -a
 // Linux localhost 3.18.71-perf+ #1 SMP PREEMPT Tue Jul 17 14:44:34 KST 2018 aarch64
-#define KERNEL_BASE 0xffffffc000080000ul
+//#define KERNEL_BASE 0xffffffc000080000ul
+#define KERNEL_BASE 0xffffffc000000000ul
 #define OFFSET__thread_info__flags 0x000
 #define OFFSET__task_struct__stack 0x008
 #define OFFSET__cred__uid 0x004
@@ -25,7 +26,7 @@
 
 #define RETRIES 3
 
-#undef NO_PROC_KALLSYMS
+#define PROC_KALLSYMS
 #define KALLSYMS_CACHING
 #define KSYM_NAME_LEN 128
 
@@ -113,7 +114,7 @@ void error(char* fmt, ...)
 }
 
 int isKernelPointer(unsigned long p) {
-    return p >= KERNEL_BASE; 
+    return p >= KERNEL_BASE && p<=0xFFFFFFFFFFFFFFFEul; 
 }
 
 unsigned long kernel_read_ulong(unsigned long kaddr);
@@ -762,27 +763,27 @@ int find_kallsyms_addresses(unsigned long searchStart, unsigned long searchEnd, 
     if (searchStart == 0)
         searchStart = KERNEL_BASE;
     if (searchEnd == 0)
-        searchEnd = searchStart + 0x4000000;
+        searchEnd = searchStart + 0x5000000;
     unsigned long foundStart = 0;
         
     unsigned char page[PAGE];
     for (unsigned long i=searchStart; i<searchEnd ; i+=PAGE) {
-        kernel_read(i, page, PAGE);
-        for (int j=0; j<PAGE; j+=0x100) {
-           if (isKernelPointer(*(unsigned long*)(page+j)) && increasing((unsigned long*)(page+j), 256/8-1)) {
-                unsigned long count = countIncreasingEntries(i+j);
-                if (count > 50000) {
-                   *startP = i+j;
-                   *countP = count;
-                   return 1;
-                }
-           }
-        }
+        if (PAGE == raw_kernel_read(i, page, PAGE))
+            for (int j=0; j<PAGE; j+=0x100) {
+               if (isKernelPointer(*(unsigned long*)(page+j)) && increasing((unsigned long*)(page+j), 256/8-1)) {
+                    unsigned long count = countIncreasingEntries(i+j);
+                    if (count > 50000) {
+                       *startP = i+j;
+                       *countP = count;
+                       return 1;
+                    }
+               }
+            }
     }
     return 0;
 }
 
-int get_kallsym_name(unsigned long offset, char* name) {
+int get_kallsyms_name(unsigned long offset, char* name) {
     unsigned char length = kernel_read_uchar(offset++);
     
     for (unsigned char i = 0; i < length ; i++) {
@@ -874,11 +875,12 @@ unsigned long findSymbol_memory_search(char* symbol) {
     char name[KSYM_NAME_LEN];
     
     for(unsigned long i = 0; i < kallsyms.num_syms; i++) {
-        unsigned int n = get_kallsym_name(offset, name);
+        unsigned int n = get_kallsyms_name(offset, name);
         if (!strcmp(name+1, symbol)) {
-            message( "found symbol in kernel memory", symbol);
+            unsigned long address = kernel_read_ulong(kallsyms.addresses + i*8);
+            message( "MAIN: found %s in kernel memory at %lx", symbol, address);
             
-            return kernel_read_ulong(kallsyms.addresses + i*8);
+            return address;
         }
         offset += n;
     }
@@ -950,7 +952,7 @@ unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char
         return address;
 #endif
     
-#ifdef NO_PROC_KALLSYMS
+#ifndef PROC_KALLSYMS
     address = findSymbol_memory_search(symbol);
 #else    
     char buf[1024];
