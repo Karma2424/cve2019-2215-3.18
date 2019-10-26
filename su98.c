@@ -64,6 +64,8 @@
 
 #define DELAY_USEC 500000
 
+#define MAX_PACKAGE_NAME 1024
+
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
@@ -1000,43 +1002,45 @@ void checkKernelVersion() {
         else message("MAIN: detected kernel version other than 3");
 }
 
-int checkWhitelist() {
+void getPackageName(unsigned uid, char* packageName) {
+    if (uid == 2000) {
+        strcpy(packageName, "adb");
+        return;
+    }
+    strcpy(packageName, "(unknown)");
+    FILE* f = fopen("/data/system/packages.list", "r");
+    if (f == NULL)
+        return;
+    unsigned id;
+    char pack[MAX_PACKAGE_NAME];
+    while(2 == fscanf(f, "%s %u%*[^\n]", pack, &id)) {
+        if (id == uid) {
+            strncpy(packageName, pack, MAX_PACKAGE_NAME);
+            packageName[MAX_PACKAGE_NAME-1] = 0;
+            goto DONE;
+        }
+    }
+DONE:
+    fclose(f);
+}
+
+int checkWhitelist(unsigned uid) {
     char *path = alloca(strlen(myPath) + sizeof(whitelist));
     strcpy(path, myPath);
     strcat(path, whitelist);
 
-    FILE* wl = fopen(path, "rw");
+    FILE* wl = fopen(path, "r");
     
     if (wl == NULL) {
         message("MAIN: no whitelist, so all callers are welcome");
         return 1;
     }
     
-    int allowed = 0;
-    char parent[1024] = "";
-    char procLine[32];
-    sprintf(procLine, "/proc/%u/cmdline", getppid());
-    
-    FILE* pcmd = fopen(procLine, "r");
-    
-    if (pcmd == NULL)
-        goto DONE;
-    
-    int i = 0;
-    
-    while(i<sizeof(parent)-1) {
-        int c = fgetc(pcmd);
-        if (c<0)
-            parent[i] = 0;
-        else
-            parent[i] = c;
-        if (c == 0)
-            break;
-        i++;
-    }
-    fclose(pcmd);
-    parent[i] = 0;
+    char parent[MAX_PACKAGE_NAME];
+    getPackageName(uid, parent);
 
+    int allowed = 0;
+    
     char line[512];
     while (NULL != fgets(line, sizeof(line), wl)) {
         line[sizeof(line)-1] = 0;
@@ -1066,12 +1070,11 @@ DONE:
     if (allowed)
         message("MAIN: whitelist allows %s", parent);
     else {
-        message("MAIN: whitelist does not allow %s", parent);
         if (parent[0]) {
             char *path = alloca(strlen(myPath) + sizeof(denyfile));
             strcpy(path, myPath);
             strcat(path, denyfile);
-            FILE* f = fopen(path, "w+");
+            FILE* f = fopen(path, "a");
             if (f != NULL) {
                 fprintf(f, "%s\n", parent);
                 fclose(f);
@@ -1204,6 +1207,8 @@ int main(int argc, char **argv)
     
 //    unsigned long selinux_enabled = findSymbol(search_base, "selinux_enabled");
 
+    unsigned int oldUID = getuid();
+
     message("MAIN: setting root credentials with cred offset %lx", offset_task_struct__cred);
     
     for (int i = 0; i < 8; i++)
@@ -1284,11 +1289,11 @@ int main(int argc, char **argv)
         }    
     }
     
-    if (!checkWhitelist()) {
+    if (!checkWhitelist(oldUID)) {
         if (0 != selinux_enforcing) {
-            message("MAIN: restoring selinux state");
             kernel_write_uint(selinux_enforcing, prev_selinux_enforcing);
         }
+        message("MAIN: whitelist check failed");
         exit(0);
     }
     
