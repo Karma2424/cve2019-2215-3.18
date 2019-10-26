@@ -1011,6 +1011,7 @@ int main(int argc, char **argv)
 {
     int command = 0;
     int dump = 0;
+    int rejoinNS = 0;
     
     char* p = strrchr(argv[0], '/');
     if (p == NULL)
@@ -1033,6 +1034,9 @@ int main(int argc, char **argv)
                 break;
             case 'd':
                 dump = 1;
+                break;
+            case 'n':
+                rejoinNS = 1;
                 break;
             default:
                 break;
@@ -1163,6 +1167,35 @@ int main(int argc, char **argv)
         message("MAIN: disabled selinux enforcing");
         
     cacheSymbol(argv[0], "selinux_enforcing", selinux_enforcing);
+    
+    if (rejoinNS) {
+        message("re-joining the init mount namespace");
+        int fd = open("/proc/1/ns/mnt", O_RDONLY);
+
+        if (fd < 0) {
+            error("open");
+            exit(1);
+        }
+
+        if (setns(fd, CLONE_NEWNS) < 0) {
+            error("setns");
+        }
+
+        message("re-joining the init net namespace");
+
+        fd = open("/proc/1/ns/net", O_RDONLY);
+
+        if (fd < 0) {
+            error("open");
+            exit(1);
+        }
+
+        if (setns(fd, CLONE_NEWNET) < 0) {
+            error("setns");
+            exit(1);
+        }    
+    }
+    
     message("MAIN: root privileges ready");
         
 /* process hangs if these are done */        
