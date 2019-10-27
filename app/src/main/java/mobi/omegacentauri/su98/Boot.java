@@ -20,7 +20,7 @@ public class Boot extends BroadcastReceiver {
         String myDir = context.getApplicationInfo().dataDir+"/";
 
         SU98.install(context, myDir);
-        if (Root.runOne(myDir + "su98 -n", myDir + "install.sh")) {
+        if (Root.runOne(myDir + "su98", myDir + "install.sh")) {
             Toast.makeText(context,"su98 installed", Toast.LENGTH_LONG).show();
         }
     }
