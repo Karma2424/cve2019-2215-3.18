@@ -9,6 +9,8 @@
  * October 2019
 */
 
+#define DELAY_USEC 200000
+
 // $ uname -a
 // Linux localhost 3.18.71-perf+ #1 SMP PREEMPT Tue Jul 17 14:44:34 KST 2018 aarch64
 //#define KERNEL_BASE 0xffffffc000080000ul
@@ -62,8 +64,6 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <errno.h>
-
-#define DELAY_USEC 500000
 
 #define MAX_PACKAGE_NAME 1024
 
@@ -1029,7 +1029,10 @@ DONE:
     fclose(f);
 }
 
-int checkWhitelist(unsigned uid) {
+int checkWhitelist(unsigned uid) {    
+    if (uid == 0 || uid == 2000) 
+        return 1;
+    
     char *path = alloca(strlen(myPath) + sizeof(whitelist));
     strcpy(path, myPath);
     strcat(path, whitelist);
