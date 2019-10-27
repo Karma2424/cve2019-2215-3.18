@@ -1127,6 +1127,10 @@ int main(int argc, char **argv)
             case 'q':
                 quiet = 1;
                 break;
+            case 'v':
+                puts("su98 version 0.01");
+                exit(0);
+                break;
             case 'c':
                 command = 1;
                 quiet = 1;
