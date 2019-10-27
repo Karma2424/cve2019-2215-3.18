@@ -41,6 +41,7 @@
 
 
 #define _GNU_SOURCE
+#include <libgen.h>
 #include <time.h>
 #include <stdbool.h>
 #include <sys/mman.h>
@@ -1093,9 +1094,19 @@ int main(int argc, char **argv)
 {
     int command = 0;
     int dump = 0;
-    int rejoinNS = 0;
+    int rejoinNS = 1;
     
-    char* p = strrchr(argv[0], '/');
+    char result[PATH_MAX];
+    ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
+    char* p = strrchr(result, '/');
+    if (p == NULL)
+        p = result;
+    else
+        p++;
+    *p = 0;
+    myPath = result;
+
+    p = strrchr(argv[0], '/');
     if (p == NULL)
         p = argv[0];
     else
@@ -1103,11 +1114,6 @@ int main(int argc, char **argv)
     
     myName = p;
     int n = p-argv[0];
-    myPath = malloc(n+1);
-    if (myPath == NULL)
-        error("allocating memory");
-    strncpy(myPath, argv[0], n);
-    myPath[n] = 0;
     
     if (!strcmp(myName,"su")) {
         quiet = 1;
@@ -1125,8 +1131,8 @@ int main(int argc, char **argv)
             case 'd':
                 dump = 1;
                 break;
-            case 'n':
-                rejoinNS = 1;
+            case 'N':
+                rejoinNS = 0;
                 break;
             default:
                 break;
@@ -1297,8 +1303,8 @@ int main(int argc, char **argv)
         if (0 != selinux_enforcing) {
             kernel_write_uint(selinux_enforcing, prev_selinux_enforcing);
         }
-        message("MAIN: whitelist check failed");
-        exit(0);
+        errno = 0;
+        error("Whitelist check failed");
     }
     
     message("MAIN: root privileges ready");
