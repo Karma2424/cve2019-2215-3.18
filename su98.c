@@ -849,6 +849,9 @@ int find_kallsyms_addresses(unsigned long searchStart, unsigned long searchEnd, 
                        *countP = count;
                        return 1;
                     }
+                    else if (count >= 10000) {
+                        message("MAIN: interesting, found a sequence of 10000 non-decreasing entries at 0x%lx", (i+j));
+                    }
                }
             }
     }
@@ -1425,7 +1428,7 @@ int main(int argc, char **argv)
         char cwd[1024];
         getcwd(cwd, sizeof(cwd));
 
-        message("MAIN: re-joining the init mount namespace");
+        message("MAIN: re-joining init mount namespace");
         int fd = open("/proc/1/ns/mnt", O_RDONLY);
 
         if (fd < 0) {
@@ -1434,10 +1437,10 @@ int main(int argc, char **argv)
         }
 
         if (setns(fd, CLONE_NEWNS) < 0) {
-            error("setns");
+            message("MAIN: **partial failure** could not rejoin init fs namespace");
         }
 
-        message("MAIN: re-joining the init net namespace");
+        message("MAIN: rejoining init net namespace");
 
         fd = open("/proc/1/ns/net", O_RDONLY);
 
@@ -1446,7 +1449,7 @@ int main(int argc, char **argv)
         }
 
         if (setns(fd, CLONE_NEWNET) < 0) {
-            error("setns");
+            message("MAIN: **partial failure** could not rejoin init net namespace");
         }    
         
         chdir(cwd);
